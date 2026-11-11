@@ -16,14 +16,15 @@ namespace
     )";
 
     constexpr const char* lineFragmentShader = R"(
+        uniform float alphaScale;
         varying vec4 vColour;
         void main()
         {
-            gl_FragColor = vColour;
+            gl_FragColor = vec4 (vColour.rgb, vColour.a * alphaScale);
         }
     )";
 
-    constexpr const char* glowVertexShader = R"(
+    constexpr const char* fullScreenVertexShader = R"(
         attribute vec2 position;
         varying vec2 uv;
         void main()
@@ -33,22 +34,60 @@ namespace
         }
     )";
 
-    // Soft-saturating tone map: overlapping passes glow instead of clipping.
-    constexpr const char* glowFragmentShader = R"(
-        uniform sampler2D accumulation;
-        uniform float exposure;
+    // One direction of a separable Gaussian. Samples sourceA (+ sourceB when
+    // mixB = 1) so the first pass can blur accum + current in one go.
+    constexpr const char* blurFragmentShader = R"(
+        uniform sampler2D sourceA;
+        uniform sampler2D sourceB;
+        uniform float mixB;
+        uniform vec2 texelStep;
+        uniform float sigma;
+        uniform int radius;
         varying vec2 uv;
         void main()
         {
-            vec3 c = texture2D (accumulation, uv).rgb;
-            gl_FragColor = vec4 (1.0 - exp (-c * exposure), 1.0);
+            vec3 sum = vec3 (0.0);
+            float total = 0.0;
+            for (int i = -48; i <= 48; ++i)
+            {
+                if (i < -radius || i > radius)
+                    continue;
+                float w = exp (-float (i * i) / (2.0 * sigma * sigma));
+                vec2 p = uv + texelStep * float (i);
+                sum += w * (texture2D (sourceA, p).rgb + mixB * texture2D (sourceB, p).rgb);
+                total += w;
+            }
+            gl_FragColor = vec4 (sum / total, 1.0);
+        }
+    )";
+
+    // Combine afterglow + live beam + blur halo, then tone map:
+    // brightness scales light before a soft-saturating curve,
+    // contrast is a power curve after it (higher = darker faint trails).
+    constexpr const char* compositeFragmentShader = R"(
+        uniform sampler2D accumulation;
+        uniform sampler2D current;
+        uniform sampler2D halo;
+        uniform float exposure;
+        uniform float contrast;
+        uniform float haloGain;
+        varying vec2 uv;
+        void main()
+        {
+            vec3 c = texture2D (accumulation, uv).rgb
+                   + texture2D (current, uv).rgb
+                   + haloGain * texture2D (halo, uv).rgb;
+            vec3 t = 1.0 - exp (-c * exposure);
+            gl_FragColor = vec4 (pow (t, vec3 (contrast)), 1.0);
         }
     )";
 
     constexpr float plotRadius = 0.9f;     // where a full-scale pure tone lands
     constexpr int maxPointsPerChannel = 4096;
     constexpr int panelMargin = 16;        // logical px around each square
-    constexpr float exposure = 2.0f;
+    constexpr float baseExposure = 1.2f;   // at 100 % brightness
+    constexpr float haloGain = 1.5f;
+    constexpr int maxBlurRadius = 48;      // must match the shader loop bound
     constexpr float barY = -0.95f;         // correlation bar height in the goniometer
 
     const juce::Colour leftColour (0xff1d9e75), rightColour (0xffd85a30), goniometerColour (0xff7f77dd);
@@ -65,8 +104,61 @@ namespace
         DBG ("Shader error: " << program->getLastError());
         return nullptr;
     }
+
+    void bindTexture (int unit, GLuint texture)
+    {
+        glActiveTexture (GL_TEXTURE0 + (GLenum) unit);
+        glBindTexture (GL_TEXTURE_2D, texture);
+    }
 }
 
+//==============================================================================
+void ScopeComponent::RenderTarget::ensure (int w, int h)
+{
+    w = juce::jmax (1, w);
+    h = juce::jmax (1, h);
+    if (fbo != 0 && w == width && h == height)
+        return;
+
+    release();
+
+    // Half-float so slow decays fade smoothly to zero instead of leaving
+    // 8-bit rounding ghosts, and bright overlaps can exceed 1.0.
+    glGenTextures (1, &texture);
+    glBindTexture (GL_TEXTURE_2D, texture);
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture (GL_TEXTURE_2D, 0);
+
+    glGenFramebuffers (1, &fbo);
+    glBindFramebuffer (GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    jassert (glCheckFramebufferStatus (GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    glClearColor (0.0f, 0.0f, 0.0f, 0.0f);
+    glClear (GL_COLOR_BUFFER_BIT);
+
+    width = w;
+    height = h;
+}
+
+void ScopeComponent::RenderTarget::release()
+{
+    if (fbo != 0) glDeleteFramebuffers (1, &fbo);
+    if (texture != 0) glDeleteTextures (1, &texture);
+    fbo = texture = 0;
+    width = height = 0;
+}
+
+void ScopeComponent::RenderTarget::bind() const
+{
+    glBindFramebuffer (GL_FRAMEBUFFER, fbo);
+    glViewport (0, 0, width, height);
+}
+
+//==============================================================================
 ScopeComponent::ScopeComponent (CircleScopeProcessor& p) : processor (p)
 {
     for (int ch = 0; ch < 2; ++ch)
@@ -186,19 +278,18 @@ void ScopeComponent::paint (juce::Graphics& g)
 void ScopeComponent::newOpenGLContextCreated()
 {
     lineShader = buildShader (context, lineVertexShader, lineFragmentShader);
-    glowShader = buildShader (context, glowVertexShader, glowFragmentShader);
-    if (lineShader == nullptr || glowShader == nullptr)
+    blurShader = buildShader (context, fullScreenVertexShader, blurFragmentShader);
+    compositeShader = buildShader (context, fullScreenVertexShader, compositeFragmentShader);
+    if (lineShader == nullptr || blurShader == nullptr || compositeShader == nullptr)
     {
         lineShader.reset();
-        glowShader.reset();
+        blurShader.reset();
+        compositeShader.reset();
         return;
     }
 
     linePosition = glGetAttribLocation (lineShader->getProgramID(), "position");
     lineColour = glGetAttribLocation (lineShader->getProgramID(), "colour");
-    glowPosition = glGetAttribLocation (glowShader->getProgramID(), "position");
-    glowTexture = glGetUniformLocation (glowShader->getProgramID(), "accumulation");
-    glowExposure = glGetUniformLocation (glowShader->getProgramID(), "exposure");
 
     glGenVertexArrays (1, &vao);
     glGenBuffers (1, &vbo);
@@ -206,49 +297,14 @@ void ScopeComponent::newOpenGLContextCreated()
 
 void ScopeComponent::openGLContextClosing()
 {
-    releaseFramebuffer();
+    for (auto* target : { &accumTarget, &currentTarget, &blurTempTarget, &blurTarget })
+        target->release();
     if (vbo != 0) glDeleteBuffers (1, &vbo);
     if (vao != 0) glDeleteVertexArrays (1, &vao);
     vbo = vao = 0;
     lineShader.reset();
-    glowShader.reset();
-}
-
-void ScopeComponent::ensureFramebuffer (int w, int h)
-{
-    if (fbo != 0 && w == fboWidth && h == fboHeight)
-        return;
-
-    releaseFramebuffer();
-
-    // Half-float so slow decays fade smoothly to zero instead of leaving
-    // 8-bit rounding ghosts.
-    glGenTextures (1, &fboTexture);
-    glBindTexture (GL_TEXTURE_2D, fboTexture);
-    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
-    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture (GL_TEXTURE_2D, 0);
-
-    glGenFramebuffers (1, &fbo);
-    glBindFramebuffer (GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTexture, 0);
-    jassert (glCheckFramebufferStatus (GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-    glClearColor (0.0f, 0.0f, 0.0f, 0.0f);
-    glClear (GL_COLOR_BUFFER_BIT);
-
-    fboWidth = w;
-    fboHeight = h;
-}
-
-void ScopeComponent::releaseFramebuffer()
-{
-    if (fbo != 0) glDeleteFramebuffers (1, &fbo);
-    if (fboTexture != 0) glDeleteTextures (1, &fboTexture);
-    fbo = fboTexture = 0;
-    fboWidth = fboHeight = 0;
+    blurShader.reset();
+    compositeShader.reset();
 }
 
 //==============================================================================
@@ -263,6 +319,9 @@ ScopeComponent::Settings ScopeComponent::readSettings() const
              value ("window"),
              value ("delay"),
              value ("afterglow"),
+             value ("brightness") * 0.01f,
+             value ("contrast") * 0.01f,
+             value ("blur"),
              processor.currentSampleRate.load() };
 }
 
@@ -377,7 +436,7 @@ void ScopeComponent::addGoniometerGuides (float halfWidth)
 }
 
 void ScopeComponent::addTrajectory (int channel, const Settings& s, const Range& r,
-                                    std::optional<juce::Colour> colourOverride, float alphaScale, float halfWidth)
+                                    std::optional<juce::Colour> colourOverride, float halfWidth)
 {
     const auto& z = analytic[channel];
     const auto& samples = block[channel];
@@ -411,8 +470,7 @@ void ScopeComponent::addTrajectory (int channel, const Settings& s, const Range&
         }
 
         const float age = (float) (i - r.start) / (float) r.length;
-        const Vertex v { x, y, col.getFloatRed(), col.getFloatGreen(), col.getFloatBlue(),
-                         (0.04f + 0.86f * age * age) * alphaScale };
+        const Vertex v { x, y, col.getFloatRed(), col.getFloatGreen(), col.getFloatBlue(), 0.04f + 0.86f * age * age };
         if (havePrev)
             addSegment (prev, v, halfWidth);
         prev = v;
@@ -420,7 +478,7 @@ void ScopeComponent::addTrajectory (int channel, const Settings& s, const Range&
     }
 }
 
-void ScopeComponent::addGoniometer (const Settings& s, const Range& r, float alphaScale, float halfWidth)
+void ScopeComponent::addGoniometer (const Settings& s, const Range& r, float halfWidth)
 {
     const auto& left = block[0];
     const auto& right = block[1];
@@ -454,7 +512,7 @@ void ScopeComponent::addGoniometer (const Settings& s, const Range& r, float alp
 
         const float age = (float) (i - r.start) / (float) r.length;
         const Vertex v { (rt - l) * g, (l + rt) * g, col.getFloatRed(), col.getFloatGreen(), col.getFloatBlue(),
-                         (0.04f + 0.86f * age * age) * alphaScale };
+                         0.04f + 0.86f * age * age };
         if (havePrev)
             addSegment (prev, v, halfWidth);
         prev = v;
@@ -462,9 +520,10 @@ void ScopeComponent::addGoniometer (const Settings& s, const Range& r, float alp
     }
 }
 
+//==============================================================================
 void ScopeComponent::drawVertices (GLint positionAttrib, GLint colourAttrib)
 {
-    if (vertices.empty())
+    if (vertices.empty() || positionAttrib < 0)
         return;
 
     glBindBuffer (GL_ARRAY_BUFFER, vbo);
@@ -486,6 +545,19 @@ void ScopeComponent::drawVertices (GLint positionAttrib, GLint colourAttrib)
         glDisableVertexAttribArray ((GLuint) colourAttrib);
 }
 
+void ScopeComponent::drawFullScreen (const juce::OpenGLShaderProgram& program)
+{
+    vertices.clear();
+    addFullScreenQuad (0.0f, 0.0f, 0.0f, 0.0f);
+    drawVertices (glGetAttribLocation (program.getProgramID(), "position"), -1);
+}
+
+void ScopeComponent::useLineShader (float alphaScale)
+{
+    lineShader->use();
+    lineShader->setUniform ("alphaScale", alphaScale);
+}
+
 //==============================================================================
 void ScopeComponent::renderOpenGL()
 {
@@ -500,7 +572,7 @@ void ScopeComponent::renderOpenGL()
     glClearColor (backgroundColour.getFloatRed(), backgroundColour.getFloatGreen(), backgroundColour.getFloatBlue(), 1.0f);
     glClear (GL_COLOR_BUFFER_BIT);
 
-    if (lineShader == nullptr || glowShader == nullptr || w <= 0 || h <= 0)
+    if (lineShader == nullptr || w <= 0 || h <= 0)
         return;
 
     const auto s = readSettings();
@@ -511,7 +583,6 @@ void ScopeComponent::renderOpenGL()
     const double dt = lastFrameMs > 0.0 ? juce::jlimit (1.0, 100.0, now - lastFrameMs) : 16.0;
     lastFrameMs = now;
     const float keep = s.afterglowMs >= 1.0f ? (float) std::exp (-dt / (double) s.afterglowMs) : 0.0f;
-    const float alphaScale = 1.0f - keep;   // steady-state brightness matches "off"
 
     analyse (0);
     analyse (1);
@@ -522,45 +593,88 @@ void ScopeComponent::renderOpenGL()
     const int firstSide = panelBounds (s.layout, 0, w, h, margin).getWidth();
     const float lineHalfWidth = 1.2f * scale / (float) firstSide;   // ~2.4 px thick, in NDC
 
+    accumTarget.ensure (w, h);
+    currentTarget.ensure (w, h);
+    blurTempTarget.ensure (w / 2, h / 2);
+    blurTarget.ensure (w / 2, h / 2);
+
     glBindVertexArray (vao);
     glEnable (GL_BLEND);
 
-    // 1. Decay the accumulation buffer, then add this frame's traces to it.
-    ensureFramebuffer (w, h);
-    glBindFramebuffer (GL_FRAMEBUFFER, fbo);
-    glViewport (0, 0, w, h);
-    lineShader->use();
-
-    glBlendFunc (GL_ZERO, GL_SRC_ALPHA);   // dst *= keep
+    // 1. Afterglow decays (dst *= keep); the live-beam buffer starts empty.
+    accumTarget.bind();
+    useLineShader (1.0f);
+    glBlendFunc (GL_ZERO, GL_SRC_ALPHA);
     vertices.clear();
     addFullScreenQuad (0.0f, 0.0f, 0.0f, keep);
     drawVertices (linePosition, lineColour);
 
-    glBlendFunc (GL_SRC_ALPHA, GL_ONE);    // additive
+    currentTarget.bind();
+    glClearColor (0.0f, 0.0f, 0.0f, 0.0f);
+    glClear (GL_COLOR_BUFFER_BIT);
+
+    // 2. This frame's traces: added to the afterglow at (1 - keep) so its
+    //    steady state matches "off", and to the live beam at full strength
+    //    so a shape that just moved is never dim.
+    glBlendFunc (GL_SRC_ALPHA, GL_ONE);
     for (int panel = 0; panel < panels; ++panel)
     {
-        const auto b = panelBounds (s.layout, panel, w, h, margin);
-        glViewport (b.getX(), b.getY(), b.getWidth(), b.getHeight());
         vertices.clear();
-
         switch (s.layout)
         {
             case Layout::sideBySide:
-                addTrajectory (panel, s, range, std::nullopt, alphaScale, lineHalfWidth);
+                addTrajectory (panel, s, range, std::nullopt, lineHalfWidth);
                 break;
             case Layout::overlay:
-                addTrajectory (0, s, range, leftColour, alphaScale, lineHalfWidth);
-                addTrajectory (1, s, range, rightColour, alphaScale, lineHalfWidth);
+                addTrajectory (0, s, range, leftColour, lineHalfWidth);
+                addTrajectory (1, s, range, rightColour, lineHalfWidth);
                 break;
             case Layout::midSide:
-                addGoniometer (s, range, alphaScale, lineHalfWidth);
+                addGoniometer (s, range, lineHalfWidth);
                 break;
         }
-        drawVertices (linePosition, lineColour);
+
+        const auto b = panelBounds (s.layout, panel, w, h, margin);
+        for (auto* target : { &accumTarget, &currentTarget })
+        {
+            glBindFramebuffer (GL_FRAMEBUFFER, target->fbo);
+            glViewport (b.getX(), b.getY(), b.getWidth(), b.getHeight());
+            useLineShader (target == &accumTarget ? 1.0f - keep : 1.0f);
+            drawVertices (linePosition, lineColour);
+        }
     }
 
-    // 2. Screen: guides first (not accumulated), then the tone-mapped glow on top.
+    // 3. Gaussian blur of (afterglow + beam) at half resolution, two passes.
+    const int blurRadius = juce::jlimit (0, maxBlurRadius, juce::roundToInt (s.blurPx * scale * 0.5f));
+    if (blurRadius > 0)
+    {
+        glDisable (GL_BLEND);
+        blurShader->use();
+        blurShader->setUniform ("sourceA", (GLint) 0);
+        blurShader->setUniform ("sourceB", (GLint) 1);
+        blurShader->setUniform ("sigma", juce::jmax (0.5f, (float) blurRadius / 2.5f));
+        blurShader->setUniform ("radius", (GLint) blurRadius);
+
+        blurTempTarget.bind();
+        bindTexture (0, accumTarget.texture);
+        bindTexture (1, currentTarget.texture);
+        blurShader->setUniform ("mixB", 1.0f);
+        blurShader->setUniform ("texelStep", 1.0f / (float) blurTempTarget.width, 0.0f);
+        drawFullScreen (*blurShader);
+
+        blurTarget.bind();
+        bindTexture (0, blurTempTarget.texture);
+        bindTexture (1, blurTempTarget.texture);
+        blurShader->setUniform ("mixB", 0.0f);
+        blurShader->setUniform ("texelStep", 0.0f, 1.0f / (float) blurTarget.height);
+        drawFullScreen (*blurShader);
+        glEnable (GL_BLEND);
+    }
+
+    // 4. Screen: guides (unaffected by image controls), then the composite on top.
     glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) screenFbo);
+    glBlendFunc (GL_SRC_ALPHA, GL_ONE);
+    useLineShader (1.0f);
     for (int panel = 0; panel < panels; ++panel)
     {
         const auto b = panelBounds (s.layout, panel, w, h, margin);
@@ -574,16 +688,20 @@ void ScopeComponent::renderOpenGL()
     }
 
     glViewport (0, 0, w, h);
-    glowShader->use();
-    glActiveTexture (GL_TEXTURE0);
-    glBindTexture (GL_TEXTURE_2D, fboTexture);
-    glUniform1i (glowTexture, 0);
-    glUniform1f (glowExposure, exposure);
     glBlendFunc (GL_ONE, GL_ONE);
-    vertices.clear();
-    addFullScreenQuad (0.0f, 0.0f, 0.0f, 0.0f);
-    drawVertices (glowPosition, -1);
-    glBindTexture (GL_TEXTURE_2D, 0);
+    compositeShader->use();
+    bindTexture (0, accumTarget.texture);
+    bindTexture (1, currentTarget.texture);
+    bindTexture (2, blurTarget.texture);
+    compositeShader->setUniform ("accumulation", (GLint) 0);
+    compositeShader->setUniform ("current", (GLint) 1);
+    compositeShader->setUniform ("halo", (GLint) 2);
+    compositeShader->setUniform ("exposure", baseExposure * s.brightness);
+    compositeShader->setUniform ("contrast", s.contrast);
+    compositeShader->setUniform ("haloGain", blurRadius > 0 ? haloGain : 0.0f);
+    drawFullScreen (*compositeShader);
 
+    for (int unit = 2; unit >= 0; --unit)
+        bindTexture (unit, 0);
     glBindVertexArray (0);
 }

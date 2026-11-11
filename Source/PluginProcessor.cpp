@@ -29,6 +29,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout CircleScopeProcessor::create
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "afterglow", 1 }, "Afterglow",
                                                        NormalisableRange<float> (0.0f, 2000.0f, 1.0f, 0.4f), 250.0f,
                                                        AudioParameterFloatAttributes().withLabel ("ms")));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "brightness", 1 }, "Brightness",
+                                                       NormalisableRange<float> (10.0f, 800.0f, 1.0f, 0.5f), 100.0f,
+                                                       AudioParameterFloatAttributes().withLabel ("%")));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "contrast", 1 }, "Contrast",
+                                                       NormalisableRange<float> (25.0f, 300.0f, 1.0f, 0.6f), 100.0f,
+                                                       AudioParameterFloatAttributes().withLabel ("%")));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "blur", 1 }, "Blur",
+                                                       NormalisableRange<float> (0.0f, 30.0f, 0.1f, 0.6f), 4.0f,
+                                                       AudioParameterFloatAttributes().withLabel ("px")));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { "test", 1 }, "Test tone",
                                                       JUCEApplicationBase::isStandaloneApp()));
     return layout;

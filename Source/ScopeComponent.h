@@ -17,9 +17,12 @@
 // (R-L). Mono is a vertical line, out-of-phase a horizontal one. A
 // correlation bar runs along the bottom (-1 to +1).
 //
-// Afterglow: traces accumulate in a float framebuffer that decays each frame
-// (like phosphor), then get tone-mapped to the screen. Repeating shapes
-// build up bright; transients fade out.
+// Image pipeline (all half-float render targets):
+//   accum   : afterglow; decays every frame, gets this frame's traces added
+//   current : this frame's traces only, at full strength (the "beam")
+//   blur    : accum + current, Gaussian blurred (separable, half resolution)
+//   screen  : guides + tone map (brightness, contrast) of
+//             accum + current + blur halo
 class ScopeComponent : public juce::Component,
                        private juce::OpenGLRenderer,
                        private juce::Timer
@@ -40,11 +43,23 @@ private:
         bool delayMode, fixedColour;
         Layout layout;
         float windowMs, delayMs, afterglowMs;
+        float brightness, contrast, blurPx;
         double sampleRate;
     };
 
     // Sample range of the analysis block that gets drawn this frame.
     struct Range { int start, end, length, delay, stride, freqLag; };
+
+    // Offscreen half-float colour buffer.
+    struct RenderTarget
+    {
+        GLuint fbo = 0, texture = 0;
+        int width = 0, height = 0;
+
+        void ensure (int w, int h);
+        void release();
+        void bind() const;
+    };
 
     void newOpenGLContextCreated() override;
     void renderOpenGL() override;
@@ -56,17 +71,15 @@ private:
     void analyse (int channel);
     void updateCorrelation (const Range&);
 
-    void addTrajectory (int channel, const Settings&, const Range&, std::optional<juce::Colour> colourOverride,
-                        float alphaScale, float halfWidth);
-    void addGoniometer (const Settings&, const Range&, float alphaScale, float halfWidth);
+    void addTrajectory (int channel, const Settings&, const Range&, std::optional<juce::Colour> colourOverride, float halfWidth);
+    void addGoniometer (const Settings&, const Range&, float halfWidth);
     void addTrajectoryGuides (float halfWidth);
     void addGoniometerGuides (float halfWidth);
     void addSegment (Vertex a, Vertex b, float halfWidth);
     void addFullScreenQuad (float r, float g, float b, float a);
     void drawVertices (GLint positionAttrib, GLint colourAttrib);
-
-    void ensureFramebuffer (int w, int h);
-    void releaseFramebuffer();
+    void drawFullScreen (const juce::OpenGLShaderProgram&);
+    void useLineShader (float alphaScale);
 
     static int numPanels (Layout);
     static juce::Rectangle<int> panelBounds (Layout, int panel, int w, int h, int margin);
@@ -75,12 +88,11 @@ private:
     CircleScopeProcessor& processor;
     juce::OpenGLContext context;
 
-    std::unique_ptr<juce::OpenGLShaderProgram> lineShader, glowShader;
-    GLint linePosition = -1, lineColour = -1, glowPosition = -1, glowTexture = -1, glowExposure = -1;
+    std::unique_ptr<juce::OpenGLShaderProgram> lineShader, blurShader, compositeShader;
+    GLint linePosition = -1, lineColour = -1;
     GLuint vbo = 0, vao = 0;
 
-    GLuint fbo = 0, fboTexture = 0;
-    int fboWidth = 0, fboHeight = 0;
+    RenderTarget accumTarget, currentTarget, blurTempTarget, blurTarget;
     double lastFrameMs = 0.0;
 
     std::atomic<int> width { 0 }, height { 0 }, shownLayout { -1 };
