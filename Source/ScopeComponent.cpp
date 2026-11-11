@@ -225,6 +225,12 @@ void ScopeComponent::resized()
     height.store (getHeight());
 }
 
+void ScopeComponent::mouseDoubleClick (const juce::MouseEvent&)
+{
+    if (onDoubleClick)
+        onDoubleClick();
+}
+
 void ScopeComponent::paint (juce::Graphics& g)
 {
     const auto layout = (Layout) juce::jlimit (0, 2, shownLayout.load());

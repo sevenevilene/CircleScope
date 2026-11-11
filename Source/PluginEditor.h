@@ -2,37 +2,26 @@
 
 #include "PluginProcessor.h"
 #include "ScopeComponent.h"
+#include "ControlPanel.h"
+#include "FullScreenWindow.h"
 
 class CircleScopeEditor : public juce::AudioProcessorEditor
 {
 public:
     explicit CircleScopeEditor (CircleScopeProcessor&);
+    ~CircleScopeEditor() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
-    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-    using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
-    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    void toggleFullScreen();
 
-    struct LabelledSlider
-    {
-        juce::Label label;
-        juce::Slider slider;
-        std::unique_ptr<SliderAttachment> attachment;
-    };
-
+    CircleScopeProcessor& scopeProcessor;
     ScopeComponent scope;
-
-    juce::ComboBox modeBox, colourBox, layoutBox;
-    juce::ToggleButton testButton { "Test tone" };
-
-    // Row 2: signal controls. Row 3: image controls.
-    LabelledSlider window, delay, afterglow, brightness, contrast, blur;
-
-    std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment;
-    std::unique_ptr<ButtonAttachment> testAttachment;
+    juce::TextButton fullScreenButton { "Full screen" };
+    ControlPanel controls;
+    std::unique_ptr<FullScreenWindow> fullScreen;   // declared last: destroyed first
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CircleScopeEditor)
 };

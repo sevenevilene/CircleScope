@@ -33,6 +33,9 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+
+    std::function<void()> onDoubleClick;
 
 private:
     struct Vertex { float x, y, r, g, b, a; };
