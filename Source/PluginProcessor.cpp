@@ -24,6 +24,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout CircleScopeProcessor::create
                                                        AudioParameterFloatAttributes().withLabel ("ms")));
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "colour", 1 }, "Colour",
                                                         StringArray { "Frequency hue", "Fixed" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "layout", 1 }, "Layout",
+                                                        StringArray { "Side by side", "Overlay", "Mid / side" }, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "afterglow", 1 }, "Afterglow",
+                                                       NormalisableRange<float> (0.0f, 2000.0f, 1.0f, 0.4f), 250.0f,
+                                                       AudioParameterFloatAttributes().withLabel ("ms")));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { "test", 1 }, "Test tone",
                                                       JUCEApplicationBase::isStandaloneApp()));
     return layout;

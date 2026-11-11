@@ -7,8 +7,9 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
 
     modeBox.addItemList ({ "Quadrature", "Delay embed" }, 1);
     colourBox.addItemList ({ "Frequency hue", "Fixed" }, 1);
+    layoutBox.addItemList ({ "Side by side", "Overlay", "Mid / side" }, 1);
 
-    for (auto* s : { &windowSlider, &delaySlider })
+    for (auto* s : { &windowSlider, &delaySlider, &afterglowSlider })
     {
         s->setSliderStyle (juce::Slider::LinearHorizontal);
         s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 20);
@@ -16,19 +17,22 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     }
 
     for (juce::Component* c : std::initializer_list<juce::Component*> {
-             &modeBox, &colourBox, &windowSlider, &delaySlider, &windowLabel, &delayLabel, &testButton })
+             &modeBox, &colourBox, &layoutBox, &windowSlider, &delaySlider, &afterglowSlider,
+             &windowLabel, &delayLabel, &afterglowLabel, &testButton })
         addAndMakeVisible (c);
 
     auto& apvts = p.apvts;
     modeAttachment = std::make_unique<ComboAttachment> (apvts, "mode", modeBox);
     colourAttachment = std::make_unique<ComboAttachment> (apvts, "colour", colourBox);
+    layoutAttachment = std::make_unique<ComboAttachment> (apvts, "layout", layoutBox);
     windowAttachment = std::make_unique<SliderAttachment> (apvts, "window", windowSlider);
     delayAttachment = std::make_unique<SliderAttachment> (apvts, "delay", delaySlider);
+    afterglowAttachment = std::make_unique<SliderAttachment> (apvts, "afterglow", afterglowSlider);
     testAttachment = std::make_unique<ButtonAttachment> (apvts, "test", testButton);
 
     setResizable (true, true);
-    setResizeLimits (520, 320, 2400, 1400);
-    setSize (960, 540);
+    setResizeLimits (620, 360, 2400, 1400);
+    setSize (960, 580);
 }
 
 void CircleScopeEditor::paint (juce::Graphics& g)
@@ -39,20 +43,26 @@ void CircleScopeEditor::paint (juce::Graphics& g)
 void CircleScopeEditor::resized()
 {
     auto area = getLocalBounds();
-    auto bar = area.removeFromBottom (44).reduced (10, 10);
+    auto controls = area.removeFromBottom (76).reduced (10, 6);
 
-    modeBox.setBounds (bar.removeFromLeft (130));
-    bar.removeFromLeft (8);
-    colourBox.setBounds (bar.removeFromLeft (130));
-    bar.removeFromLeft (8);
-    testButton.setBounds (bar.removeFromRight (100));
+    auto row1 = controls.removeFromTop (30).reduced (0, 3);
+    for (auto* box : { &modeBox, &colourBox, &layoutBox })
+    {
+        box->setBounds (row1.removeFromLeft (140));
+        row1.removeFromLeft (8);
+    }
+    testButton.setBounds (row1.removeFromRight (100));
 
-    const int half = bar.getWidth() / 2;
-    auto left = bar.removeFromLeft (half);
-    windowLabel.setBounds (left.removeFromLeft (56));
-    windowSlider.setBounds (left.reduced (4, 0));
-    delayLabel.setBounds (bar.removeFromLeft (48));
-    delaySlider.setBounds (bar.reduced (4, 0));
+    auto row2 = controls.removeFromTop (30).reduced (0, 3);
+    const int third = row2.getWidth() / 3;
+    auto place = [] (juce::Rectangle<int> r, juce::Label& label, juce::Slider& slider)
+    {
+        label.setBounds (r.removeFromLeft (70));
+        slider.setBounds (r.reduced (4, 0));
+    };
+    place (row2.removeFromLeft (third), windowLabel, windowSlider);
+    place (row2.removeFromLeft (third), delayLabel, delaySlider);
+    place (row2, afterglowLabel, afterglowSlider);
 
     scope.setBounds (area);
 }

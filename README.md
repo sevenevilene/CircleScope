@@ -8,7 +8,7 @@ Each channel is drawn as a 2D trajectory in its own square:
 - **Delay embed**: x = s(t), y = s(t − delay). The default delay of 12.5 ms
   is a quarter period of 20 Hz, so a 20 Hz sine is a circle.
 
-Colour shows instantaneous frequency (20 Hz blue to 20 kHz red), and brightness
+Colour shows instantaneous frequency (20 Hz red to 20 kHz blue), and brightness
 shows the trail's age. **Test tone** shows 20 Hz + 60 Hz on L and
 20 Hz + 60.5 Hz on R, so the two channels slowly drift apart.
 
