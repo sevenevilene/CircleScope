@@ -34,3 +34,9 @@ to `~/Library/Audio/Plug-Ins/VST3`. To validate the AU: `auval -v aufx Crc1 Cscp
 
 3D delay embedding (s(t), s(t−τ), s(t−2τ)) with rotation; mid/side view;
 port the renderer to Metal; a cymatics (Chladni plate) mode.
+
+## License
+
+The CircleScope source code is MIT licensed (see `LICENSE`). JUCE is not
+included in this repository and has its own license (AGPLv3 or a commercial
+JUCE license), which applies to the plugin binaries you build with it.
