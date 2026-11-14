@@ -9,6 +9,14 @@ Each channel is drawn as a 2D trajectory in its own square:
   analytic signal). A pure sine is a perfect circle.
 - **Delay embed**: x = s(t), y = s(t − delay). The default delay of 12.5 ms
   is a quarter period of 20 Hz, so a 20 Hz sine is a circle.
+- **Swing**: the signal moves a point along an axis through the centre
+  (-1 to 1), and the axis swings round in the plane, so the picture is a
+  polar plot of the sound. **Swing motion** is Back and forth (a pendulum,
+  180° each way) or Round (turning on and on). The axis makes one swing per
+  Window length (**Once per window**), or swings at the **Rate** you set. A
+  rate tied to the pitch gives a still figure: a 110 Hz tone with a round
+  swing of 55 Hz is a four-petal rose; slightly off, it slowly turns. Swing
+  applies to the Side by side and Overlay layouts.
 
 Colour shows instantaneous frequency (20 Hz red to 20 kHz blue), and brightness
 shows the trail's age. **Test tone** shows 20 Hz + 60 Hz on L and
@@ -28,7 +36,7 @@ to `~/Library/Audio/Plug-Ins/VST3`. To validate the AU: `auval -v aufx Crc1 Cscp
 ## Controlling it
 
 Every look parameter is a host parameter, so a DAW can automate it. Each one
-also answers to a MIDI controller (CC 102 to 117, in the order of
+also answers to a MIDI controller (CC 102 to 119 and then 85, in the order of
 `Source/ScopeParams.h`; 0 to 127 covers the full range) in the standalone app
 and in hosts that send MIDI to audio effects. Logic does not send MIDI to an
 audio effect, so use track automation there.
@@ -142,7 +150,13 @@ render to: add `video=HDMI-A-1:1920x1080@60D` to `/boot/firmware/cmdline.txt`.
 
 ## Ideas next
 
-3D delay embedding with rotation; a cymatics (Chladni plate) mode.
+- Swing mode: lock the swing rate to the detected pitch, with a ratio, so
+  figures stand still while the notes change.
+- Swing mode: let one channel move the point and the other swing the axis.
+- Swing mode in 3D: more planes (XY, XZ, YZ), each with its own swing, so
+  the axis moves over a sphere; drawn through a rotating 3D view.
+- 3D delay embedding with rotation.
+- A cymatics (Chladni plate) mode.
 
 ## License
 

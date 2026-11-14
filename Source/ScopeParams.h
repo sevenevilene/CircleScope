@@ -10,13 +10,15 @@
 //   Layer   stacking order, 1 at the bottom
 //   Divide  on a wall, split one picture over the cells of all this
 //           instance's streams instead of repeating it in each
+//
+// The Swing parameters belong to the Swing mode (see ScopeComponent.h).
 namespace scope
 {
     enum ParamIndex
     {
         pMode = 0, pWindow, pDelay, pColour, pLayout, pAfterglow,
         pBrightness, pContrast, pBlur, pLowCut, pHighCut, pGuides, pTest,
-        pBlend, pLayer, pDivide,
+        pBlend, pLayer, pDivide, pSwingMotion, pSwingRate, pSwingSync,
         numParams
     };
 
@@ -33,11 +35,12 @@ namespace scope
         int cc;                // MIDI controller number (0..127 maps onto the full range)
     };
 
+    enum class Mode { quadrature = 0, delayEmbed, swing };
     enum class Blend { add = 0, screen, normal, lighten, multiply, darken, overlay, difference, exclusion, subtract };
 
-    // CCs 102..117 are undefined in the MIDI spec, so they collide with nothing.
+    // CCs 102..119 and 85 are undefined in the MIDI spec, so they collide with nothing.
     inline constexpr ParamInfo paramTable[numParams] = {
-        { "mode",       "Mode",       ParamKind::choice, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "Quadrature|Delay embed",          102 },
+        { "mode",       "Mode",       ParamKind::choice, 0.0f,  2.0f,     1.0f,  1.0f,  0.0f,     "",   "Quadrature|Delay embed|Swing",    102 },
         { "window",     "Window",     ParamKind::real,   5.0f,  300.0f,   0.1f,  0.5f,  60.0f,    "ms", "",                                103 },
         { "delay",      "Delay",      ParamKind::real,   0.05f, 50.0f,    0.01f, 0.4f,  12.5f,    "ms", "",                                104 },
         { "colour",     "Colour",     ParamKind::choice, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "Frequency hue|Fixed",             105 },
@@ -53,5 +56,8 @@ namespace scope
         { "blend",      "Blend",      ParamKind::choice, 0.0f,  9.0f,     1.0f,  1.0f,  0.0f,     "",   "Add|Screen|Normal|Lighten|Multiply|Darken|Overlay|Difference|Exclusion|Subtract", 115 },
         { "layer",      "Layer",      ParamKind::choice, 0.0f,  7.0f,     1.0f,  1.0f,  0.0f,     "",   "1|2|3|4|5|6|7|8",                 116 },
         { "divide",     "Divide",     ParamKind::toggle, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "",                                117 },
+        { "swingmotion","Swing motion", ParamKind::choice, 0.0f, 1.0f,    1.0f,  1.0f,  0.0f,     "",   "Back and forth|Round",            118 },
+        { "swingrate",  "Swing rate", ParamKind::real,   0.05f, 2000.0f,  0.01f, 0.3f,  1.0f,     "Hz", "",                                119 },
+        { "swingsync",  "Swing per window", ParamKind::toggle, 0.0f, 1.0f, 1.0f, 1.0f,  1.0f,     "",   "",                                85 },
     };
 }

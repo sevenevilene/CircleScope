@@ -13,6 +13,13 @@
 //   Quadrature:  x = s(t), y = H{s}(t) (90 degrees shifted, via the analytic
 //                signal). A pure sine traces a perfect circle.
 //   Delay embed: x = s(t), y = s(t - delay).
+//   Swing:       the signal moves a point along an axis through the centre,
+//                and the axis swings round in the plane, so the point is at
+//                s(t) * (cos a(t), sin a(t)): a polar plot. The axis either
+//                swings back and forth like a pendulum, 180 degrees each
+//                way, or turns round and round, once per Window length or
+//                at a free rate. A rate tied to the pitch gives a still
+//                figure (a rose); slightly off, it slowly turns.
 //
 // Mid / side layout: a goniometer. Vertical = mid (L+R), horizontal = side
 // (R-L). Mono is a vertical line, out-of-phase a horizontal one. A
@@ -90,12 +97,16 @@ public:
 private:
     struct Vertex { float x, y, r, g, b, a; };
     enum class Layout { sideBySide = 0, overlay = 1, midSide = 2 };
+    using Mode = scope::Mode;
 
     struct Settings
     {
-        bool delayMode, fixedColour, guides;
+        scope::Mode mode;
+        bool fixedColour, guides;
         Layout layout;
         int blend;                 // scope::Blend
+        bool swingRound;
+        float swingHz;
         float windowMs, delayMs, afterglowMs;
         float brightness, contrast, blurPx;
         float lowCutHz, highCutHz;

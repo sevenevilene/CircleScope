@@ -223,6 +223,7 @@ private:
     double weightsSampleRate = 0.0;
     bool bandLimited = false;
     float gain[3] { 1.0f, 1.0f, 1.0f };              // L, R, goniometer
+    size_t blockStart[2] {};                         // absolute position of each block's first sample
 
     AnalysisThread thread { *this };
 };
@@ -470,11 +471,17 @@ ScopeComponent::Settings ScopeComponent::readSettings (const ScopeSource* src)
     using namespace scope;
     auto get = [src] (int index) { return src != nullptr ? src->get (index) : paramTable[index].def; };
 
-    return { get (pMode) > 0.5f,
+    // The axis of the Swing mode makes one swing per window length, or
+    // swings at its own rate.
+    const float swingHz = get (pSwingSync) > 0.5f ? 1000.0f / juce::jmax (1.0f, get (pWindow)) : get (pSwingRate);
+
+    return { (Mode) juce::jlimit (0, 2, (int) get (pMode)),
              get (pColour) > 0.5f,
              get (pGuides) > 0.5f,
              (Layout) juce::jlimit (0, 2, (int) get (pLayout)),
              juce::jlimit (0, 9, (int) get (pBlend)),
+             get (pSwingMotion) > 0.5f,
+             swingHz,
              get (pWindow),
              get (pDelay),
              get (pAfterglow),
@@ -575,7 +582,7 @@ void ScopeComponent::LayerRenderer::updateBandWeights (const Settings& s)
 void ScopeComponent::LayerRenderer::analyse (int channel)
 {
     auto& samples = block[channel];
-    source.rings[channel].readLatest (samples.data(), blockSize);
+    blockStart[channel] = source.rings[channel].readLatest (samples.data(), blockSize);
 
     // Analytic signal: zero the negative frequencies, double the positive.
     for (int i = 0; i < blockSize; ++i)
@@ -675,13 +682,36 @@ void ScopeComponent::LayerRenderer::addTrajectory (std::vector<Vertex>& out, int
     const juce::Colour fixed = colourOverride.value_or (channel == 0 ? leftColour : rightColour);
     const bool useHue = ! s.fixedColour && ! colourOverride.has_value();
 
+    // Swing mode: the axis angle follows the samples' absolute position, so
+    // a point keeps its place on screen for as long as it is shown.
+    const double swingsPerSample = (double) s.swingHz / s.sampleRate;
+    auto swingAngle = [&] (int i)
+    {
+        const double swings = (double) (blockStart[channel] + (size_t) i) * swingsPerSample;
+        const double phase = juce::MathConstants<double>::twoPi * (swings - std::floor (swings));
+        return s.swingRound ? phase : juce::MathConstants<double>::pi * std::sin (phase);
+    };
+
     Vertex prev {};
     bool havePrev = false;
     for (int i = r.start; i < r.end; i += r.stride)
     {
         const auto zi = z[(size_t) i];
-        const float x = zi.real() * g;
-        const float y = s.delayMode ? samples[(size_t) (i - r.delay)] * g : zi.imag() * g;
+        float x = zi.real() * g;
+        float y = 0.0f;
+
+        switch (s.mode)
+        {
+            case Mode::quadrature: y = zi.imag() * g; break;
+            case Mode::delayEmbed: y = samples[(size_t) (i - r.delay)] * g; break;
+            case Mode::swing:
+            {
+                const double angle = swingAngle (i);
+                y = x * (float) std::sin (angle);
+                x *= (float) std::cos (angle);
+                break;
+            }
+        }
 
         juce::Colour col = fixed;
         if (useHue)

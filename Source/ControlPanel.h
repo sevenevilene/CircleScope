@@ -12,7 +12,11 @@ public:
     ControlPanel (CircleScopeProcessor& p, juce::Component* trailing, bool translucent)
         : processor (p), trailingComponent (trailing), isTranslucent (translucent)
     {
-        modeBox.addItemList ({ "Quadrature", "Delay embed" }, 1);
+        modeBox.addItemList (juce::StringArray::fromTokens (scope::paramTable[scope::pMode].choices, "|", ""), 1);
+        swingMotionBox.addItemList (juce::StringArray::fromTokens (scope::paramTable[scope::pSwingMotion].choices, "|", ""), 1);
+        swingMotionBox.setTooltip ("Swing mode: the axis swings back and forth like a pendulum, or turns round and round");
+        swingSyncButton.setTooltip ("Swing mode: one swing per Window length. Off: the Swing rate sets it");
+        swingLabel.setText ("Swing", juce::dontSendNotification);
         colourBox.addItemList ({ "Frequency hue", "Fixed" }, 1);
         layoutBox.addItemList ({ "Side by side", "Overlay", "Mid / side" }, 1);
 
@@ -39,6 +43,7 @@ public:
         }
 
         for (juce::Component* c : std::initializer_list<juce::Component*> { &modeBox, &colourBox, &layoutBox, &guidesButton, &testButton,
+                                                                            &swingLabel, &swingMotionBox, &swingSyncButton,
                                                                             &blendLabel, &blendBox, &layerLabel, &layerBox,
                                                                             &streamLabel, &divideButton, &streamStatus })
             addAndMakeVisible (c);
@@ -65,10 +70,13 @@ public:
         setUp (blur, "blur", "Blur", " px");
         setUp (lowCut, "lowcut", "Low cut", " Hz");
         setUp (highCut, "highcut", "High cut", " Hz");
+        setUp (swingRate, "swingrate", "Rate", " Hz");
 
         modeAttachment = std::make_unique<ComboAttachment> (apvts, "mode", modeBox);
         colourAttachment = std::make_unique<ComboAttachment> (apvts, "colour", colourBox);
         layoutAttachment = std::make_unique<ComboAttachment> (apvts, "layout", layoutBox);
+        swingMotionAttachment = std::make_unique<ComboAttachment> (apvts, "swingmotion", swingMotionBox);
+        swingSyncAttachment = std::make_unique<ButtonAttachment> (apvts, "swingsync", swingSyncButton);
         blendAttachment = std::make_unique<ComboAttachment> (apvts, "blend", blendBox);
         layerAttachment = std::make_unique<ComboAttachment> (apvts, "layer", layerBox);
         divideAttachment = std::make_unique<ButtonAttachment> (apvts, "divide", divideButton);
@@ -78,11 +86,11 @@ public:
         guidesAttachment = std::make_unique<ButtonAttachment> (apvts, "guides", guidesButton);
         testAttachment = std::make_unique<ButtonAttachment> (apvts, "test", testButton);
 
-        startTimerHz (2);
+        startTimerHz (8);
         timerCallback();
     }
 
-    static constexpr int preferredHeight = 166;
+    static constexpr int preferredHeight = 196;
 
     void paint (juce::Graphics& g) override
     {
@@ -137,7 +145,18 @@ public:
         layerLabel.setBounds (layering.removeFromRight (46));
         blendBox.setBounds (layering.reduced (4, 0));
 
-        // Row 5: the streams this instance is sent to.
+        // Row 5: the axis of the Swing mode.
+        auto row5swing = controls.removeFromTop (30).reduced (0, 3);
+        const int third = row5swing.getWidth() / 3;
+        auto motion = row5swing.removeFromLeft (third);
+        swingLabel.setBounds (motion.removeFromLeft (76));
+        swingMotionBox.setBounds (motion.reduced (4, 0));
+        auto rate = row5swing.removeFromLeft (third);
+        swingRate.label.setBounds (rate.removeFromLeft (76));
+        swingRate.slider.setBounds (rate.reduced (4, 0));
+        swingSyncButton.setBounds (row5swing.removeFromLeft (150).reduced (4, 0));
+
+        // Row 6: the streams this instance is sent to.
         auto row5 = controls.removeFromTop (30).reduced (0, 3);
         streamLabel.setBounds (row5.removeFromLeft (76));
         row5.removeFromLeft (4);
@@ -162,6 +181,12 @@ private:
 
     void timerCallback() override
     {
+        // The swing controls only do something in Swing mode, the rate only when it is free.
+        const bool swing = modeBox.getSelectedId() == (int) scope::Mode::swing + 1;
+        swingMotionBox.setEnabled (swing);
+        swingSyncButton.setEnabled (swing);
+        swingRate.slider.setEnabled (swing && ! swingSyncButton.getToggleState());
+
         bool sending = false;
         for (auto& button : streamButtons)
             sending = sending || button.getToggleState();
@@ -176,16 +201,17 @@ private:
     juce::Component* trailingComponent;
     const bool isTranslucent;
 
-    juce::ComboBox modeBox, colourBox, layoutBox, blendBox, layerBox;
-    juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" }, divideButton { "Divide" };
-    juce::Label blendLabel, layerLabel, streamLabel, streamStatus;
+    juce::ComboBox modeBox, colourBox, layoutBox, blendBox, layerBox, swingMotionBox;
+    juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" }, divideButton { "Divide" },
+                       swingSyncButton { "Once per window" };
+    juce::Label blendLabel, layerLabel, streamLabel, streamStatus, swingLabel;
     std::array<juce::TextButton, net::maxStreams> streamButtons;
 
-    // Row 2: signal controls. Row 3: image controls. Row 4: band limits, layering. Row 5: streams.
-    LabelledSlider window, delay, afterglow, brightness, contrast, blur, lowCut, highCut;
+    // Row 2: signal controls. Row 3: image controls. Row 4: band limits, layering. Row 5: swing. Row 6: streams.
+    LabelledSlider window, delay, afterglow, brightness, contrast, blur, lowCut, highCut, swingRate;
 
-    std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, blendAttachment, layerAttachment;
-    std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment;
+    std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, blendAttachment, layerAttachment, swingMotionAttachment;
+    std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment, swingSyncAttachment;
     std::array<std::unique_ptr<ButtonAttachment>, net::maxStreams> streamAttachments;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ControlPanel)
