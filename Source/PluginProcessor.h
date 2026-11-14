@@ -40,7 +40,7 @@ public:
     // Steps a choice or toggle parameter to its next value (keyboard shortcuts).
     void cycleParameter (int paramIndex);
 
-    // Nodes on the network currently receiving this instance's stream.
+    // Nodes and walls on the network currently receiving this instance.
     int getNumNetworkTargets() const { return sender.getNumTargets(); }
 
     juce::AudioProcessorValueTreeState apvts;
@@ -50,6 +50,7 @@ private:
     void timerCallback() override;
 
     bool bindSourceToParameters();
+    NetSender::StreamSwitches streamSwitches();
 
     const bool sourceBound;   // initialised before sender, whose thread reads source
     TestTone testTone;

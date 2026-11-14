@@ -3,7 +3,8 @@
 
 namespace
 {
-    constexpr const char* streamParamId = "netstream";
+    // "netstream1".."netstream16": the streams this instance is on.
+    juce::String streamParamId (int stream) { return "netstream" + juce::String (stream); }
 }
 
 CircleScopeProcessor::CircleScopeProcessor()
@@ -12,7 +13,7 @@ CircleScopeProcessor::CircleScopeProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "STATE", createLayout()),
       sourceBound (bindSourceToParameters()),
-      sender (source, *apvts.getRawParameterValue (streamParamId))
+      sender (source, streamSwitches())
 {
     juce::ignoreUnused (sourceBound);
     startTimerHz (60);
@@ -26,6 +27,14 @@ bool CircleScopeProcessor::bindSourceToParameters()
         pendingCc[i].store (-1);
     }
     return true;
+}
+
+NetSender::StreamSwitches CircleScopeProcessor::streamSwitches()
+{
+    NetSender::StreamSwitches switches;
+    for (int i = 0; i < net::maxStreams; ++i)
+        switches[(size_t) i] = apvts.getRawParameterValue (streamParamId (i + 1));
+    return switches;
 }
 
 CircleScopeProcessor::~CircleScopeProcessor()
@@ -65,13 +74,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout CircleScopeProcessor::create
         }
     }
 
-    // Which network stream this instance feeds. A setting, not a look, so it
-    // is not automatable and is not part of the parameter table.
-    StringArray streams { "Off" };
+    // Which network streams this instance is on. On a wall a stream is a
+    // cell, so automating these moves the instance around the grid.
     for (int i = 1; i <= net::maxStreams; ++i)
-        streams.add ("Stream " + String (i));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { streamParamId, 1 }, "Network stream", streams, 0,
-                                                        AudioParameterChoiceAttributes().withAutomatable (false)));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { streamParamId (i), 1 }, "Stream " + String (i), false));
     return layout;
 }
 
@@ -169,7 +175,17 @@ void CircleScopeProcessor::setStateInformation (const void* data, int sizeInByte
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+
+            // A session saved when an instance could only be on one stream.
+            if (const auto old = apvts.state.getChildWithProperty ("id", "netstream"); old.isValid())
+            {
+                if (auto* param = apvts.getParameter (streamParamId ((int) old["value"])))
+                    param->setValueNotifyingHost (1.0f);
+                apvts.state.removeChild (old, nullptr);
+            }
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

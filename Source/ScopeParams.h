@@ -2,13 +2,21 @@
 
 // The one list of look/analysis parameters. The plugin builds its host
 // parameters from it, the network stream carries the values in this order,
-// cluster nodes store them in this order, and MIDI CCs map through it.
+// receivers store them in this order, and MIDI CCs map through it.
+//
+// Blend, Layer and Divide only matter on a receiver (wall or cluster node),
+// where every plugin instance sending to a stream is one layer of it:
+//   Blend   how this layer is combined with the layers under it
+//   Layer   stacking order, 1 at the bottom
+//   Divide  on a wall, split one picture over the cells of all this
+//           instance's streams instead of repeating it in each
 namespace scope
 {
     enum ParamIndex
     {
         pMode = 0, pWindow, pDelay, pColour, pLayout, pAfterglow,
         pBrightness, pContrast, pBlur, pLowCut, pHighCut, pGuides, pTest,
+        pBlend, pLayer, pDivide,
         numParams
     };
 
@@ -25,7 +33,9 @@ namespace scope
         int cc;                // MIDI controller number (0..127 maps onto the full range)
     };
 
-    // CCs 102..114 are undefined in the MIDI spec, so they collide with nothing.
+    enum class Blend { add = 0, screen, normal, lighten, multiply, darken, overlay, difference, exclusion, subtract };
+
+    // CCs 102..117 are undefined in the MIDI spec, so they collide with nothing.
     inline constexpr ParamInfo paramTable[numParams] = {
         { "mode",       "Mode",       ParamKind::choice, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "Quadrature|Delay embed",          102 },
         { "window",     "Window",     ParamKind::real,   5.0f,  300.0f,   0.1f,  0.5f,  60.0f,    "ms", "",                                103 },
@@ -40,5 +50,8 @@ namespace scope
         { "highcut",    "High cut",   ParamKind::real,   20.0f, 20000.0f, 1.0f,  0.25f, 20000.0f, "Hz", "",                                112 },
         { "guides",     "Guides",     ParamKind::toggle, 0.0f,  1.0f,     1.0f,  1.0f,  1.0f,     "",   "",                                113 },
         { "test",       "Test tone",  ParamKind::toggle, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "",                                114 },
+        { "blend",      "Blend",      ParamKind::choice, 0.0f,  9.0f,     1.0f,  1.0f,  0.0f,     "",   "Add|Screen|Normal|Lighten|Multiply|Darken|Overlay|Difference|Exclusion|Subtract", 115 },
+        { "layer",      "Layer",      ParamKind::choice, 0.0f,  7.0f,     1.0f,  1.0f,  0.0f,     "",   "1|2|3|4|5|6|7|8",                 116 },
+        { "divide",     "Divide",     ParamKind::toggle, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "",                                117 },
     };
 }

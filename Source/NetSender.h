@@ -1,23 +1,27 @@
 #pragma once
 
 #include <juce_core/juce_core.h>
+#include <array>
 #include <map>
 #include <vector>
 #include "NetProtocol.h"
 #include "ScopeSource.h"
 
-// Plugin side of the cluster link. Listens for node beacons and, while a
-// stream number is selected, sends the displayed audio and the parameter
-// values to every node that asked for that stream.
+// Plugin side of the network link. Listens for node beacons and, while at
+// least one stream is switched on, sends the displayed audio and the
+// parameter values to every node (or wall) that shows one of those streams.
 //
 // It reads the same rings the scope draws from (they allow any number of
 // readers), on its own thread, so the audio callback does no network work.
 class NetSender : private juce::Thread
 {
 public:
-    // streamChoice: 0 = off, 1..16 = stream id (the raw value of a host parameter).
-    NetSender (const ScopeSource& sourceToSend, const std::atomic<float>& streamChoice)
-        : Thread ("CircleScope net sender"), source (sourceToSend), stream (streamChoice)
+    using StreamSwitches = std::array<const std::atomic<float>*, net::maxStreams>;
+
+    // streamSwitches: one on/off value per stream (the raw values of host parameters).
+    NetSender (const ScopeSource& sourceToSend, StreamSwitches streamSwitches)
+        : Thread ("CircleScope net sender"), source (sourceToSend), switches (streamSwitches),
+          senderId ((juce::uint16) juce::Random::getSystemRandom().nextInt (65536))
     {
         startThread();
     }
@@ -29,7 +33,7 @@ public:
         stopThread (2000);
     }
 
-    // Nodes currently receiving this instance's stream.
+    // Nodes currently receiving this instance.
     int getNumTargets() const noexcept { return numTargets.load(); }
 
 private:
@@ -38,7 +42,7 @@ private:
         juce::String address;
         int audioPort = 0;
         juce::uint32 lastSeenMs = 0;
-        bool wants[net::maxStreams + 1] {};
+        juce::uint32 wants = 0;                         // stream mask, as in AudioHeader
         std::unique_ptr<juce::DatagramSocket> socket;   // one each: it caches the resolved address
     };
 
@@ -53,12 +57,15 @@ private:
 
         while (! threadShouldExit())
         {
-            const int id = juce::jlimit (0, net::maxStreams, juce::roundToInt (stream.load()));
+            juce::uint32 mask = 0;
+            for (int i = 0; i < net::maxStreams; ++i)
+                if (switches[(size_t) i]->load() > 0.5f)
+                    mask |= 1u << i;
             const auto now = juce::Time::getMillisecondCounter();
 
             readBeacons (now);
 
-            if (id == 0)
+            if (mask == 0)
             {
                 streaming = false;
                 numTargets.store (0);
@@ -68,7 +75,7 @@ private:
 
             std::vector<Node*> targets;
             for (auto& [key, node] : nodes)
-                if (node.wants[id] && now - node.lastSeenMs < 5000)
+                if ((node.wants & mask) != 0 && now - node.lastSeenMs < 5000)
                     targets.push_back (&node);
             numTargets.store ((int) targets.size());
 
@@ -87,8 +94,8 @@ private:
                     source.rings[0].read (readPosition, left, frames);
                     source.rings[1].read (readPosition, right, frames);
 
-                    net::AudioHeader header { net::audioMagic, (juce::uint16) id, (juce::uint16) frames,
-                                              (juce::uint32) juce::roundToInt (source.sampleRate.load()), 0,
+                    net::AudioHeader header { net::audioMagic, senderId, (juce::uint16) frames,
+                                              (juce::uint32) juce::roundToInt (source.sampleRate.load()), mask,
                                               (juce::uint64) readPosition };
                     std::memcpy (packet.data(), &header, sizeof (header));
                     auto* samples = reinterpret_cast<float*> (packet.data() + sizeof (header));
@@ -118,7 +125,7 @@ private:
 
             if (! targets.empty() && (changed || now - lastParamSendMs > 500))
             {
-                net::ParamHeader header { net::paramMagic, (juce::uint16) id, (juce::uint16) scope::numParams };
+                net::ParamHeader header { net::paramMagic, senderId, (juce::uint16) scope::numParams };
                 std::memcpy (packet.data(), &header, sizeof (header));
                 std::memcpy (packet.data() + sizeof (header), params, sizeof (params));
                 for (auto* node : targets)
@@ -151,16 +158,17 @@ private:
             node.audioPort = audioPort;
             node.lastSeenMs = now;
 
-            std::fill (std::begin (node.wants), std::end (node.wants), false);
+            node.wants = 0;
             if (const auto* list = beacon["streams"].getArray())
                 for (const auto& s : *list)
                     if ((int) s >= 1 && (int) s <= net::maxStreams)
-                        node.wants[(int) s] = true;
+                        node.wants |= 1u << ((int) s - 1);
         }
     }
 
     const ScopeSource& source;
-    const std::atomic<float>& stream;
+    const StreamSwitches switches;
+    const juce::uint16 senderId;
     net::BeaconReceiver beacons;
     std::map<juce::String, Node> nodes;
     std::atomic<int> numTargets { 0 };

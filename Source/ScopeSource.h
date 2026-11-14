@@ -7,7 +7,7 @@
 
 // Everything a ScopeComponent needs to draw: the two sample rings, the
 // sample rate, and the current parameter values. The plugin feeds one from
-// its audio callback; a cluster node feeds one per network stream.
+// its audio callback; a cluster node or wall feeds one per network stream.
 struct ScopeSource
 {
     // 2^17 samples: ~0.68 s at 192 kHz, more than the render thread ever reads.

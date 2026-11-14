@@ -3,6 +3,7 @@
 // It opens a clean full-screen scope on every display (or one window across
 // all of them), receives audio and parameters from CircleScope plugin
 // instances over the network, and draws its configured part of the picture.
+// Every instance sending to the stream an output shows is one layer of it.
 // It announces itself with a broadcast beacon so plugins and the control app
 // find it without any configuration, and serves live previews and remote
 // configuration to the control app.
@@ -13,7 +14,7 @@
 #include <juce_opengl/juce_opengl.h>
 #include <array>
 #include <csignal>
-#include "../NetProtocol.h"
+#include "../NetReceiver.h"
 #include "../ScopeComponent.h"
 
 namespace
@@ -68,179 +69,6 @@ struct OutputConfig
         take ("spanh", spanH);
         sanitise();
     }
-};
-
-//==============================================================================
-// Receives every stream into its own ScopeSource. All sixteen exist for the
-// whole run, so an output can switch stream by swapping a pointer.
-class StreamReceiver : private juce::Thread
-{
-public:
-    StreamReceiver() : Thread ("CircleScope receiver")
-    {
-        for (int i = 1; i <= net::maxStreams; ++i)
-        {
-            sources[(size_t) i] = std::make_unique<ScopeSource>();
-            lastPacketMs[i].store (0);
-            lostPackets[i].store (0);
-        }
-    }
-
-    ~StreamReceiver() override
-    {
-        signalThreadShouldExit();
-        stopThread (2000);
-    }
-
-    bool start()
-    {
-        for (int i = 0; i < net::portTries && audioPort == 0; ++i)
-            if (socket.bindToPort (net::audioPortBase + i))
-                audioPort = net::audioPortBase + i;
-
-        if (audioPort != 0)
-            startThread();
-        return audioPort != 0;
-    }
-
-    ScopeSource& getSource (int stream) { return *sources[(size_t) juce::jlimit (1, net::maxStreams, stream)]; }
-    int getAudioPort() const { return audioPort; }
-
-    // Milliseconds since the last audio packet of a stream, or -1 if none yet.
-    int getPacketAgeMs (int stream) const
-    {
-        const auto last = lastPacketMs[stream].load();
-        return last == 0 ? -1 : (int) (juce::Time::getMillisecondCounter() - last);
-    }
-
-    int getLostPackets (int stream) const { return lostPackets[stream].load(); }
-
-    std::atomic<bool> testTone { false };   // replaces all network audio with the test signal
-
-private:
-    void run() override
-    {
-        std::vector<char> packet (2048);
-        float left[512], right[512];
-        double testClockMs = 0.0;
-
-        while (! threadShouldExit())
-        {
-            if (socket.waitUntilReady (true, 5) > 0)
-            {
-                // Drain what has arrived, but come up for air under a flood.
-                for (int i = 0; i < 256 && socket.waitUntilReady (true, 0) > 0; ++i)
-                {
-                    const int n = socket.read (packet.data(), (int) packet.size(), false);
-                    if (n <= 0)
-                        break;
-                    handlePacket (packet.data(), n, left, right);
-                }
-            }
-
-            if (! testTone.load())
-            {
-                testClockMs = 0.0;
-                continue;
-            }
-
-            // Generate as many samples as real time has advanced.
-            constexpr double rate = 48000.0;
-            const double now = juce::Time::getMillisecondCounterHiRes();
-            if (testClockMs <= 0.0 || now - testClockMs > 500.0)
-                testClockMs = now - 5.0;
-
-            int due = (int) ((now - testClockMs) * rate / 1000.0);
-            testClockMs += due * 1000.0 / rate;
-            while (due > 0)
-            {
-                const int n = juce::jmin (512, due);
-                tone.render (left, right, n, rate);
-                for (int s = 1; s <= net::maxStreams; ++s)
-                {
-                    sources[(size_t) s]->sampleRate.store (rate);
-                    sources[(size_t) s]->rings[0].push (left, n);
-                    sources[(size_t) s]->rings[1].push (right, n);
-                }
-                due -= n;
-            }
-        }
-    }
-
-    void handlePacket (const char* data, int size, float* left, float* right)
-    {
-        juce::uint32 magic = 0;
-        if (size < (int) sizeof (net::ParamHeader))
-            return;
-        std::memcpy (&magic, data, 4);
-
-        if (magic == net::paramMagic)
-        {
-            net::ParamHeader header;
-            std::memcpy (&header, data, sizeof (header));
-            const int count = juce::jmin ((int) header.count, (int) scope::numParams);
-            if (header.stream < 1 || header.stream > net::maxStreams
-                || size < (int) sizeof (header) + (int) header.count * (int) sizeof (float))
-                return;
-
-            auto& source = *sources[header.stream];
-            for (int i = 0; i < count; ++i)
-            {
-                float value = 0.0f;
-                std::memcpy (&value, data + sizeof (header) + (size_t) i * sizeof (float), sizeof (float));
-                if (std::isfinite (value))
-                    source.local[i].store (juce::jlimit (scope::paramTable[i].min, scope::paramTable[i].max, value));
-            }
-            return;
-        }
-
-        if (magic != net::audioMagic || size < (int) sizeof (net::AudioHeader))
-            return;
-
-        net::AudioHeader header;
-        std::memcpy (&header, data, sizeof (header));
-        const int frames = header.frames;
-        if (header.stream < 1 || header.stream > net::maxStreams || frames < 1 || frames > net::maxFramesPerPacket
-            || size < (int) sizeof (header) + frames * 2 * (int) sizeof (float))
-            return;
-
-        const int stream = header.stream;
-        lastPacketMs[stream].store (juce::jmax ((juce::uint32) 1, juce::Time::getMillisecondCounter()));
-
-        // Count gaps; drop packets that arrive late or twice. A big jump back
-        // means the sender restarted, so follow it.
-        auto& expected = nextPosition[stream];
-        if (expected != 0 && header.samplePosition != expected)
-        {
-            if (header.samplePosition < expected && expected - header.samplePosition < 96000)
-                return;
-            ++lostPackets[stream];
-        }
-        expected = header.samplePosition + (juce::uint64) frames;
-
-        if (testTone.load())
-            return;
-
-        const char* payload = data + sizeof (header);
-        for (int i = 0; i < frames; ++i)
-        {
-            std::memcpy (&left[i], payload + (size_t) (2 * i) * sizeof (float), sizeof (float));
-            std::memcpy (&right[i], payload + (size_t) (2 * i + 1) * sizeof (float), sizeof (float));
-        }
-
-        auto& source = *sources[(size_t) stream];
-        source.sampleRate.store ((double) juce::jlimit ((juce::uint32) 8000, (juce::uint32) 384000, header.sampleRate));
-        source.rings[0].push (left, frames);
-        source.rings[1].push (right, frames);
-    }
-
-    juce::DatagramSocket socket { false };
-    int audioPort = 0;
-    std::array<std::unique_ptr<ScopeSource>, net::maxStreams + 1> sources;
-    std::atomic<juce::uint32> lastPacketMs[net::maxStreams + 1];
-    std::atomic<int> lostPackets[net::maxStreams + 1];
-    juce::uint64 nextPosition[net::maxStreams + 1] {};
-    TestTone tone;
 };
 
 //==============================================================================
@@ -389,9 +217,9 @@ private:
 class OutputWindow : public juce::Component
 {
 public:
-    OutputWindow (ScopeSource& source, juce::Rectangle<int> bounds, bool fullScreen, const juce::String& title,
+    OutputWindow (juce::Rectangle<int> bounds, bool fullScreen, const juce::String& title,
                   std::function<bool (const juce::KeyPress&)> keyHandler)
-        : scope (source, false), onKey (std::move (keyHandler))
+        : onKey (std::move (keyHandler))
     {
         setOpaque (true);
         setWantsKeyboardFocus (true);
@@ -421,7 +249,7 @@ public:
     bool keyPressed (const juce::KeyPress& key) override { return onKey (key); }
     void userTriedToCloseWindow() override { juce::JUCEApplicationBase::quit(); }
 
-    ScopeComponent scope;
+    ScopeComponent scope { ScopeComponent::LayerProvider(), false };   // the node says what it shows
 
 private:
     std::function<bool (const juce::KeyPress&)> onKey;
@@ -542,10 +370,10 @@ public:
                 output.config.apply (list->getReference ((int) i));
 
             const int index = (int) i;
-            output.window = std::make_unique<OutputWindow> (receiver.getSource (output.config.stream), areas[i], ! windowed,
+            output.window = std::make_unique<OutputWindow> (areas[i], ! windowed,
                                                             nodeName + " - output " + juce::String (index + 1),
                                                             [this] (const juce::KeyPress& key) { return handleKey (key); });
-            output.window->scope.setView (output.config.view());
+            showConfig (output);
             output.window->scope.onPreview = [this, index] (const juce::Image& image) { server->submitPreview (index, image); };
         }
 
@@ -583,6 +411,20 @@ private:
         std::unique_ptr<OutputWindow> window;
     };
 
+    // Points an output's scope at its stream: every instance heard on it is
+    // a layer, each drawn through this output's part of the wall.
+    void showConfig (Output& output)
+    {
+        output.window->scope.setLayerProvider ([this, stream = output.config.stream, view = output.config.view()] (ScopeComponent::LayerList& list)
+        {
+            StreamReceiver::LayerList heard;
+            const int count = receiver.getLayers (stream, heard);
+            for (int i = 0; i < count; ++i)
+                list[(size_t) i] = { heard[(size_t) i].source, view };
+            return count;
+        });
+    }
+
     bool handleKey (const juce::KeyPress& key)
     {
         const auto c = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
@@ -616,8 +458,7 @@ private:
 
             auto& output = outputs[(size_t) index];
             output.config.apply (command);
-            output.window->scope.setSource (receiver.getSource (output.config.stream));
-            output.window->scope.setView (output.config.view());
+            showConfig (output);
             saveConfig();
         }
         else if (name == "identify")

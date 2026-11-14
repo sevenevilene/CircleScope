@@ -1,7 +1,8 @@
 # CircleScope
 
 Stereo "circle" oscilloscope plugin (AU / VST3 / Standalone, JUCE + OpenGL),
-with a networked mode that spreads it over a cluster of screens.
+with two ways to show many instances at once: CircleScope Wall, a grid of
+scopes on one computer, and a networked cluster of screens.
 Each channel is drawn as a 2D trajectory in its own square:
 
 - **Quadrature**: x = signal, y = the same signal shifted 90° (via an FFT
@@ -21,13 +22,13 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j8
 ```
 
-This builds the plugin, `CircleScopeNode` and `CircleScope Control`. The build copies the AU to `~/Library/Audio/Plug-Ins/Components` and the VST3
+This builds the plugin, `CircleScope Wall`, `CircleScopeNode` and `CircleScope Control`. The build copies the AU to `~/Library/Audio/Plug-Ins/Components` and the VST3
 to `~/Library/Audio/Plug-Ins/VST3`. To validate the AU: `auval -v aufx Crc1 Cscp`.
 
 ## Controlling it
 
 Every look parameter is a host parameter, so a DAW can automate it. Each one
-also answers to a MIDI controller (CC 102 to 114, in the order of
+also answers to a MIDI controller (CC 102 to 117, in the order of
 `Source/ScopeParams.h`; 0 to 127 covers the full range) in the standalone app
 and in hosts that send MIDI to audio effects. Logic does not send MIDI to an
 audio effect, so use track automation there.
@@ -38,13 +39,65 @@ show one band of the same audio.
 Full screen is clean: no controls, labels or cursor. Keys: `Esc`/`F` exit,
 `M` mode, `L` layout, `C` colour, `G` guides, `T` test tone.
 
+## CircleScope Wall
+
+For composing on one computer, with no cluster: one app that divides its
+window into a grid, one scope per cell.
+
+- In **CircleScope** (the plugin), switch on one or more of the **Streams**
+  1 to 16. On the wall a stream is a cell, so this picks the cells the
+  instance appears in. With **Divide** off its picture is repeated in each
+  of them; with Divide on, one picture is split across them (across the
+  smallest block of cells that holds them all).
+- **CircleScope Wall** shows one stream in each cell. Press `Tab` for the
+  setup bar: grid size (up to 6 x 6) and, for the selected cell, its stream
+  or Off. A new grid starts with streams 1, 2, 3... in reading order. The
+  settings are remembered.
+
+### Layers
+
+Instances that share a stream are layers of that cell, up to 8, each drawn
+with its own settings. So one instance can fill the whole grid while another
+sits on a single cell on top of it. Per instance:
+
+- **Layer** (1 to 8) is the stacking order, 1 at the bottom. The bottom
+  layer's guides are the ones shown.
+- **Blend** is how the instance is combined with the layers under it: Add
+  (the default), Screen, Normal, Lighten, Multiply, Darken, Overlay,
+  Difference, Exclusion or Subtract. A layer is light on black, so in Normal,
+  Multiply, Darken and Overlay its brightness serves as its opacity: where it
+  is dark, what is underneath shows through unchanged.
+
+The streams, Layer, Blend and Divide are host parameters like the rest, so
+the DAW can automate where an instance appears and how it blends.
+
+Run it in a window next to the DAW, or drag it to a second monitor or TV and
+press `F` for full screen there. Full screen is clean: no bar, captions or
+cursor. It can also run on another computer on the same network.
+
+Keys: `F` full screen (`Esc` leaves it, so does a double-click), `Tab`/`S`
+setup bar, arrows select a cell, `+`/`-` change its stream, `T` test tone,
+`Q` quit. `--help` lists the command line options (`--grid 3x2`,
+`--fullscreen`, `--display N`, ...).
+
+Each layer analyses its audio on its own thread, so a big grid uses all the
+CPU cores; the drawing itself shares one OpenGL thread.
+
+To the plugin a wall is one more node: it is found the same way and gets the
+same streams, so a wall and a cluster can run side by side. The control app
+does not list walls; a wall is set up in its own window.
+
 ## Cluster
+
+For an installation with many screens.
 
 Three programs work together on one network:
 
-- **CircleScope** (the plugin): set **Network** to a stream number (1 to 16)
+- **CircleScope** (the plugin): switch on one or more **Streams** (1 to 16)
   and it sends what it displays, plus its parameters, to every node showing
-  that stream. One instance per track gives one stream per track.
+  one of them. Instances sharing a stream are layers there too (see Layers
+  above); Divide only applies to a wall, since a node has its own place in
+  the video wall set from the control app.
 - **CircleScopeNode**: runs on each display machine (Raspberry Pi 4, or any
   Mac/Linux box). Clean full screen on every display, drawing its stream.
   `--span` uses one window across all displays, `--windowed` is for testing.
@@ -70,9 +123,10 @@ render to: add `video=HDMI-A-1:1920x1080@60D` to `/boot/firmware/cmdline.txt`.
 
 - `Source/ScopeParams.h`: the one table of parameters (ranges, defaults, CCs)
 - `Source/ScopeSource.h`, `RingBuffer.h`: sample rings and parameter values a scope draws from
-- `Source/ScopeComponent.*`: analytic signal, band limits, auto-gain, OpenGL rendering, wall regions, previews
+- `Source/ScopeComponent.*`: analytic signal, band limits, auto-gain (on a thread per scope), OpenGL rendering, wall regions, previews
 - `Source/PluginProcessor.*`, `PluginEditor.*`, `ControlPanel.h`, `FullScreenWindow.h`: the plugin
-- `Source/NetProtocol.h`, `NetSender.h`: wire format and the plugin's sender
+- `Source/NetProtocol.h`, `NetSender.h`, `NetReceiver.h`: wire format, the plugin's sender, the receiver of walls and nodes
+- `Source/Wall/WallMain.cpp`: the wall
 - `Source/Node/NodeMain.cpp`: the cluster node
 - `Source/Control/ControlMain.cpp`: the control center
 

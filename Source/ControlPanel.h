@@ -16,15 +16,31 @@ public:
         colourBox.addItemList ({ "Frequency hue", "Fixed" }, 1);
         layoutBox.addItemList ({ "Side by side", "Overlay", "Mid / side" }, 1);
 
-        streamBox.addItem ("Off", 1);
-        for (int i = 1; i <= net::maxStreams; ++i)
-            streamBox.addItem ("Stream " + juce::String (i), i + 1);
-        streamBox.setTooltip ("Send this instance's audio and settings to cluster nodes showing this stream");
-        streamLabel.setText ("Network", juce::dontSendNotification);
+        blendBox.addItemList (juce::StringArray::fromTokens (scope::paramTable[scope::pBlend].choices, "|", ""), 1);
+        layerBox.addItemList (juce::StringArray::fromTokens (scope::paramTable[scope::pLayer].choices, "|", ""), 1);
+        blendBox.setTooltip ("On a wall or cluster node: how this instance is combined with the layers under it");
+        layerBox.setTooltip ("Stacking order among the instances on the same stream. 1 is the bottom layer");
+        divideButton.setTooltip ("On a wall: split one picture over the cells of all the streams switched on here, instead of repeating it in each");
+        blendLabel.setText ("Blend", juce::dontSendNotification);
+        layerLabel.setText ("Layer", juce::dontSendNotification);
+        streamLabel.setText ("Streams", juce::dontSendNotification);
         streamStatus.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
 
+        for (int i = 0; i < net::maxStreams; ++i)
+        {
+            auto& button = streamButtons[(size_t) i];
+            button.setButtonText (juce::String (i + 1));
+            button.setClickingTogglesState (true);
+            button.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff7f77dd));
+            button.setConnectedEdges ((i > 0 ? juce::Button::ConnectedOnLeft : 0) | (i < net::maxStreams - 1 ? juce::Button::ConnectedOnRight : 0));
+            button.setTooltip ("Send this instance to stream " + juce::String (i + 1)
+                               + ". On a CircleScope Wall a stream is a cell; instances sharing one are layers");
+            addAndMakeVisible (button);
+        }
+
         for (juce::Component* c : std::initializer_list<juce::Component*> { &modeBox, &colourBox, &layoutBox, &guidesButton, &testButton,
-                                                                            &streamLabel, &streamBox, &streamStatus })
+                                                                            &blendLabel, &blendBox, &layerLabel, &layerBox,
+                                                                            &streamLabel, &divideButton, &streamStatus })
             addAndMakeVisible (c);
         if (trailingComponent != nullptr)
             addAndMakeVisible (trailingComponent);
@@ -53,7 +69,12 @@ public:
         modeAttachment = std::make_unique<ComboAttachment> (apvts, "mode", modeBox);
         colourAttachment = std::make_unique<ComboAttachment> (apvts, "colour", colourBox);
         layoutAttachment = std::make_unique<ComboAttachment> (apvts, "layout", layoutBox);
-        streamAttachment = std::make_unique<ComboAttachment> (apvts, "netstream", streamBox);
+        blendAttachment = std::make_unique<ComboAttachment> (apvts, "blend", blendBox);
+        layerAttachment = std::make_unique<ComboAttachment> (apvts, "layer", layerBox);
+        divideAttachment = std::make_unique<ButtonAttachment> (apvts, "divide", divideButton);
+        for (int i = 0; i < net::maxStreams; ++i)
+            streamAttachments[(size_t) i] = std::make_unique<ButtonAttachment> (apvts, "netstream" + juce::String (i + 1),
+                                                                                streamButtons[(size_t) i]);
         guidesAttachment = std::make_unique<ButtonAttachment> (apvts, "guides", guidesButton);
         testAttachment = std::make_unique<ButtonAttachment> (apvts, "test", testButton);
 
@@ -61,7 +82,7 @@ public:
         timerCallback();
     }
 
-    static constexpr int preferredHeight = 136;
+    static constexpr int preferredHeight = 166;
 
     void paint (juce::Graphics& g) override
     {
@@ -107,13 +128,24 @@ public:
         placeRow (controls.removeFromTop (30).reduced (0, 3), { &window, &delay, &afterglow });
         placeRow (controls.removeFromTop (30).reduced (0, 3), { &brightness, &contrast, &blur });
 
-        // Row 4: band limits, then the network stream in the third cell.
+        // Row 4: band limits, then how this instance layers in the third cell.
         auto row4 = controls.removeFromTop (30).reduced (0, 3);
-        auto network = row4.removeFromRight (row4.getWidth() / 3);
+        auto layering = row4.removeFromRight (row4.getWidth() / 3);
         placeRow (row4.withWidth (row4.getWidth() * 3 / 2), { &lowCut, &highCut });
-        streamLabel.setBounds (network.removeFromLeft (76));
-        streamBox.setBounds (network.removeFromLeft (110).reduced (4, 0));
-        streamStatus.setBounds (network.reduced (4, 0));
+        blendLabel.setBounds (layering.removeFromLeft (76));
+        layerBox.setBounds (layering.removeFromRight (64).reduced (4, 0));
+        layerLabel.setBounds (layering.removeFromRight (46));
+        blendBox.setBounds (layering.reduced (4, 0));
+
+        // Row 5: the streams this instance is sent to.
+        auto row5 = controls.removeFromTop (30).reduced (0, 3);
+        streamLabel.setBounds (row5.removeFromLeft (76));
+        row5.removeFromLeft (4);
+        for (auto& button : streamButtons)
+            button.setBounds (row5.removeFromLeft (30));
+        row5.removeFromLeft (12);
+        divideButton.setBounds (row5.removeFromLeft (80));
+        streamStatus.setBounds (row5.reduced (4, 0));
     }
 
 private:
@@ -130,11 +162,13 @@ private:
 
     void timerCallback() override
     {
-        const bool sending = streamBox.getSelectedId() > 1;
+        bool sending = false;
+        for (auto& button : streamButtons)
+            sending = sending || button.getToggleState();
         const int nodes = processor.getNumNetworkTargets();
         streamStatus.setText (! sending ? juce::String()
-                                        : nodes == 0 ? juce::String ("no nodes listening")
-                                                     : juce::String (nodes) + (nodes == 1 ? " node" : " nodes"),
+                                        : nodes == 0 ? juce::String ("nothing listening")
+                                                     : juce::String (nodes) + (nodes == 1 ? " receiver" : " receivers"),
                               juce::dontSendNotification);
     }
 
@@ -142,15 +176,17 @@ private:
     juce::Component* trailingComponent;
     const bool isTranslucent;
 
-    juce::ComboBox modeBox, colourBox, layoutBox, streamBox;
-    juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" };
-    juce::Label streamLabel, streamStatus;
+    juce::ComboBox modeBox, colourBox, layoutBox, blendBox, layerBox;
+    juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" }, divideButton { "Divide" };
+    juce::Label blendLabel, layerLabel, streamLabel, streamStatus;
+    std::array<juce::TextButton, net::maxStreams> streamButtons;
 
-    // Row 2: signal controls. Row 3: image controls. Row 4: band limits.
+    // Row 2: signal controls. Row 3: image controls. Row 4: band limits, layering. Row 5: streams.
     LabelledSlider window, delay, afterglow, brightness, contrast, blur, lowCut, highCut;
 
-    std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, streamAttachment;
-    std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment;
+    std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, blendAttachment, layerAttachment;
+    std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment;
+    std::array<std::unique_ptr<ButtonAttachment>, net::maxStreams> streamAttachments;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ControlPanel)
 };

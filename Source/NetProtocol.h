@@ -3,18 +3,24 @@
 #include <juce_core/juce_core.h>
 #include <cstring>
 
-// Wire format shared by the plugin (sender), the cluster nodes and the
-// control app. Everything is little-endian, which is what every machine
+// Wire format shared by the plugin (sender), the receivers (cluster nodes
+// and CircleScope Wall) and the control app. Everything is little-endian, which is what every machine
 // involved (Apple Silicon, Intel, Raspberry Pi) uses natively.
 //
 //   UDP 47800  beacon   node -> broadcast, once a second, JSON:
 //                       { "app": "circlescope-node", "name": ..., "audio": port,
 //                         "control": port, "streams": [1, 2] }
+//                       CircleScope Wall sends the same beacon without
+//                       "control", so plugins find it and the control app
+//                       leaves it alone.
 //   UDP 47780+ the same beacon, sent by a node to loopback for listeners
 //                       on its own machine (see BeaconReceiver)
-//   UDP audio  stream   plugin -> each node that lists the plugin's stream:
-//                       AudioHeader + interleaved float32 L/R, and ParamHeader
-//                       + one float per entry of scope::paramTable
+//   UDP audio  stream   plugin -> each node that lists one of the plugin's
+//                       streams: AudioHeader + interleaved float32 L/R, and
+//                       ParamHeader + one float per entry of scope::paramTable.
+//                       An instance sends its audio once, with the set of
+//                       streams it is on; a receiver treats every instance
+//                       it hears on a stream as one layer of that stream.
 //   TCP control         control app <-> node, framed as
 //                       [u32 length][u8 type][payload]; type 'J' is JSON text,
 //                       type 'P' is a preview: [u8 output index][JPEG]
@@ -30,23 +36,23 @@ namespace net
     constexpr int maxFramesPerPacket = 160;  // keeps a packet under one Ethernet MTU
     constexpr const char* nodeAppId = "circlescope-node";
 
-    constexpr juce::uint32 audioMagic = 0x31415343;   // "CSA1"
-    constexpr juce::uint32 paramMagic = 0x31505343;   // "CSP1"
+    constexpr juce::uint32 audioMagic = 0x32415343;   // "CSA2"
+    constexpr juce::uint32 paramMagic = 0x32505343;   // "CSP2"
 
     struct AudioHeader
     {
         juce::uint32 magic;
-        juce::uint16 stream;
+        juce::uint16 sender;           // random per plugin instance; with the address, names the layer
         juce::uint16 frames;
         juce::uint32 sampleRate;
-        juce::uint32 reserved;
+        juce::uint32 streamMask;       // bit (n - 1) set: this instance is on stream n
         juce::uint64 samplePosition;   // of the first frame; gaps mean lost packets
     };
 
     struct ParamHeader
     {
         juce::uint32 magic;
-        juce::uint16 stream;
+        juce::uint16 sender;
         juce::uint16 count;
     };
 

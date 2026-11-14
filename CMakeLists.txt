@@ -49,6 +49,31 @@ if(CIRCLESCOPE_NODE_ONLY)
 endif()
 
 #===============================================================================
+# Wall: one window divided into a grid of scopes, for working on one computer
+# without a cluster. Fed over the network like a node.
+juce_add_gui_app(CircleScopeWall
+    PRODUCT_NAME "CircleScope Wall"
+    COMPANY_NAME "CircleScope"
+    BUNDLE_ID "com.circlescope.wall"
+    PLIST_TO_MERGE "${CIRCLESCOPE_PLIST}")
+
+target_sources(CircleScopeWall PRIVATE
+    Source/Wall/WallMain.cpp
+    Source/ScopeComponent.cpp)
+
+target_compile_definitions(CircleScopeWall PRIVATE ${CIRCLESCOPE_DEFINITIONS})
+
+target_link_libraries(CircleScopeWall
+    PRIVATE
+        juce::juce_gui_basics
+        juce::juce_dsp
+        juce::juce_opengl
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags)
+
+#===============================================================================
 # Control center: live grid of every node's outputs.
 juce_add_gui_app(CircleScopeControl
     PRODUCT_NAME "CircleScope Control"
