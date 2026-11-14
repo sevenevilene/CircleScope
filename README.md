@@ -130,11 +130,19 @@ render to: add `video=HDMI-A-1:1920x1080@60D` to `/boot/firmware/cmdline.txt`.
 - `Source/Node/NodeMain.cpp`: the cluster node
 - `Source/Control/ControlMain.cpp`: the control center
 
+## To do
+
+- **Frame-locked tiles**, once it can be tested on a real cluster. Every
+  node analyses the samples it has when it draws, and runs its own
+  auto-gain, so on a picture split over several screens fast shapes may not
+  meet exactly at the seams. The nodes should all draw the same sample
+  window (the packets already carry a sample position to lock to) with the
+  same gain. The same applies to a divided picture across the cells of a
+  wall.
+
 ## Ideas next
 
-Frame-locked tiles (all nodes drawing the same sample window, so fast shapes
-meet exactly at screen seams); 3D delay embedding with rotation; a cymatics
-(Chladni plate) mode.
+3D delay embedding with rotation; a cymatics (Chladni plate) mode.
 
 ## License
 
