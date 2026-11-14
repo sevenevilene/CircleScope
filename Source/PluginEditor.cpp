@@ -3,19 +3,19 @@
 CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     : AudioProcessorEditor (p),
       scopeProcessor (p),
-      scope (p),
+      scope (p.source, true),
       controls (p, &fullScreenButton, false)
 {
     addAndMakeVisible (scope);
     addAndMakeVisible (controls);
 
-    fullScreenButton.setTooltip ("Full screen (or double-click the scope)");
+    fullScreenButton.setTooltip ("Full screen (or double-click the scope). Esc or F exits.");
     fullScreenButton.onClick = [this] { toggleFullScreen(); };
     scope.onDoubleClick = [this] { toggleFullScreen(); };
 
     setResizable (true, true);
-    setResizeLimits (640, 400, 2400, 1400);
-    setSize (980, 620);
+    setResizeLimits (800, 440, 2400, 1400);
+    setSize (980, 650);
 }
 
 CircleScopeEditor::~CircleScopeEditor()
