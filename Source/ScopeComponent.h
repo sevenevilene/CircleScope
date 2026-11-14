@@ -4,7 +4,7 @@
 #include <juce_opengl/juce_opengl.h>
 #include <complex>
 #include <optional>
-#include "PluginProcessor.h"
+#include "ScopeSource.h"
 
 // Draws the stereo signal as 2D trajectories.
 //
@@ -17,6 +17,13 @@
 // (R-L). Mono is a vertical line, out-of-phase a horizontal one. A
 // correlation bar runs along the bottom (-1 to +1).
 //
+// Low cut / High cut band-limit the signal in the frequency domain before
+// any of that, so several scopes can each show one band of the same audio.
+//
+// A scope normally shows the whole picture. setView() makes it show only a
+// part of a larger virtual canvas instead: that is how one picture is tiled
+// over the screens of a video wall, each node drawing its own cell.
+//
 // Image pipeline (all half-float render targets):
 //   accum   : afterglow; decays every frame, gets this frame's traces added
 //   current : this frame's traces only, at full strength (the "beam")
@@ -28,8 +35,25 @@ class ScopeComponent : public juce::Component,
                        private juce::Timer
 {
 public:
-    explicit ScopeComponent (CircleScopeProcessor&);
+    // showLabels: paint the small text labels (L, R, M, S) over the picture.
+    // Off gives a clean image and skips JUCE's component painting entirely.
+    ScopeComponent (ScopeSource&, bool showLabels);
     ~ScopeComponent() override;
+
+    // Part of the virtual canvas shown here, as fractions of it (y from the top).
+    struct View { float x = 0.0f, y = 0.0f, w = 1.0f, h = 1.0f; };
+    void setView (View);
+
+    // Switch to another source. It must outlive this component.
+    void setSource (ScopeSource&);
+
+    // Small copies of the finished frame, for remote monitoring. The callback
+    // runs on the render thread. An interval of 0 turns previews off.
+    std::function<void (const juce::Image&)> onPreview;
+    void setPreviewIntervalMs (int ms) { previewIntervalMs.store (ms); }
+
+    float getFramesPerSecond() const noexcept { return framesPerSecond.load(); }
+    juce::String getRendererName() const;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -43,11 +67,20 @@ private:
 
     struct Settings
     {
-        bool delayMode, fixedColour;
+        bool delayMode, fixedColour, guides;
         Layout layout;
         float windowMs, delayMs, afterglowMs;
         float brightness, contrast, blurPx;
+        float lowCutHz, highCutHz;
         double sampleRate;
+    };
+
+    // Where one panel lands in this component's framebuffer: a transform from
+    // panel coordinates (-1..1) to clip space, and the pixels it may touch.
+    struct PanelPlacement
+    {
+        float scaleX, scaleY, offsetX, offsetY;
+        juce::Rectangle<int> scissor;
     };
 
     // Sample range of the analysis block that gets drawn this frame.
@@ -59,7 +92,7 @@ private:
         GLuint fbo = 0, texture = 0;
         int width = 0, height = 0;
 
-        void ensure (int w, int h);
+        void ensure (int w, int h, bool halfFloat = true);
         void release();
         void bind() const;
     };
@@ -71,7 +104,11 @@ private:
 
     Settings readSettings() const;
     Range computeRange (const Settings&) const;
-    void analyse (int channel);
+    void analyse (int channel, const Settings&);
+    void updateBandWeights (const Settings&);
+    PanelPlacement placePanel (Layout, int panel, int w, int h, int margin) const;
+    bool usePanel (const PanelPlacement&);
+    void capturePreview (GLuint screenFbo, int w, int h);
     void updateCorrelation (const Range&);
 
     void addTrajectory (int channel, const Settings&, const Range&, std::optional<juce::Colour> colourOverride, float halfWidth);
@@ -83,12 +120,14 @@ private:
     void drawVertices (GLint positionAttrib, GLint colourAttrib);
     void drawFullScreen (const juce::OpenGLShaderProgram&);
     void useLineShader (float alphaScale);
+    void setLineTransform (float scaleX, float scaleY, float offsetX, float offsetY);
 
     static int numPanels (Layout);
     static juce::Rectangle<int> panelBounds (Layout, int panel, int w, int h, int margin);
     static juce::Colour colourForFrequency (double hz);
 
-    CircleScopeProcessor& processor;
+    std::atomic<ScopeSource*> source;
+    const bool showLabels;
     juce::OpenGLContext context;
 
     std::unique_ptr<juce::OpenGLShaderProgram> lineShader, blurShader, compositeShader;
@@ -96,7 +135,16 @@ private:
     GLuint vbo = 0, vao = 0;
 
     RenderTarget accumTarget, currentTarget, blurTempTarget, blurTarget;
-    double lastFrameMs = 0.0;
+    RenderTarget previewTargets[4];                  // successive halvings of the screen
+    std::vector<juce::uint8> previewPixels;
+    std::atomic<int> previewIntervalMs { 0 };
+    double lastFrameMs = 0.0, lastPreviewMs = 0.0, fpsWindowStartMs = 0.0;
+    int framesInWindow = 0;
+    std::atomic<float> framesPerSecond { 0.0f };
+    std::atomic<float> viewX { 0.0f }, viewY { 0.0f }, viewW { 1.0f }, viewH { 1.0f };
+
+    juce::SpinLock rendererNameLock;
+    juce::String rendererName;
 
     std::atomic<int> width { 0 }, height { 0 }, shownLayout { -1 };
 
@@ -108,6 +156,10 @@ private:
     std::vector<float> block[2];
     std::vector<std::complex<float>> analytic[2];    // z(t) = s(t) + i*H{s}(t)
     std::vector<std::complex<float>> timeScratch, freqScratch;
+    std::vector<float> bandWeights;                  // per FFT bin, 0..N/2
+    float weightsLowCut = -1.0f, weightsHighCut = -1.0f;
+    double weightsSampleRate = 0.0;
+    bool bandLimited = false;
     std::vector<Vertex> vertices;
     float gain[3] { 1.0f, 1.0f, 1.0f };              // L, R, goniometer
     float correlation = 1.0f;

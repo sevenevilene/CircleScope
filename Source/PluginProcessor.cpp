@@ -1,12 +1,36 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+namespace
+{
+    constexpr const char* streamParamId = "netstream";
+}
+
 CircleScopeProcessor::CircleScopeProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "STATE", createLayout())
+      apvts (*this, nullptr, "STATE", createLayout()),
+      sourceBound (bindSourceToParameters()),
+      sender (source, *apvts.getRawParameterValue (streamParamId))
 {
+    juce::ignoreUnused (sourceBound);
+    startTimerHz (60);
+}
+
+bool CircleScopeProcessor::bindSourceToParameters()
+{
+    for (int i = 0; i < scope::numParams; ++i)
+    {
+        source.param[i] = apvts.getRawParameterValue (scope::paramTable[i].id);
+        pendingCc[i].store (-1);
+    }
+    return true;
+}
+
+CircleScopeProcessor::~CircleScopeProcessor()
+{
+    stopTimer();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout CircleScopeProcessor::createLayout()
@@ -14,38 +38,69 @@ juce::AudioProcessorValueTreeState::ParameterLayout CircleScopeProcessor::create
     using namespace juce;
     AudioProcessorValueTreeState::ParameterLayout layout;
 
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Mode",
-                                                        StringArray { "Quadrature", "Delay embed" }, 0));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "window", 1 }, "Window",
-                                                       NormalisableRange<float> (5.0f, 300.0f, 0.1f, 0.5f), 60.0f,
-                                                       AudioParameterFloatAttributes().withLabel ("ms")));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "delay", 1 }, "Delay",
-                                                       NormalisableRange<float> (0.05f, 50.0f, 0.01f, 0.4f), 12.5f,
-                                                       AudioParameterFloatAttributes().withLabel ("ms")));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "colour", 1 }, "Colour",
-                                                        StringArray { "Frequency hue", "Fixed" }, 0));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { "layout", 1 }, "Layout",
-                                                        StringArray { "Side by side", "Overlay", "Mid / side" }, 0));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "afterglow", 1 }, "Afterglow",
-                                                       NormalisableRange<float> (0.0f, 2000.0f, 1.0f, 0.4f), 250.0f,
-                                                       AudioParameterFloatAttributes().withLabel ("ms")));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "brightness", 1 }, "Brightness",
-                                                       NormalisableRange<float> (10.0f, 800.0f, 1.0f, 0.5f), 100.0f,
-                                                       AudioParameterFloatAttributes().withLabel ("%")));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "contrast", 1 }, "Contrast",
-                                                       NormalisableRange<float> (25.0f, 300.0f, 1.0f, 0.6f), 100.0f,
-                                                       AudioParameterFloatAttributes().withLabel ("%")));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "blur", 1 }, "Blur",
-                                                       NormalisableRange<float> (0.0f, 30.0f, 0.1f, 0.6f), 4.0f,
-                                                       AudioParameterFloatAttributes().withLabel ("px")));
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "test", 1 }, "Test tone",
-                                                      JUCEApplicationBase::isStandaloneApp()));
+    for (int i = 0; i < scope::numParams; ++i)
+    {
+        const auto& info = scope::paramTable[i];
+        const ParameterID id { info.id, 1 };
+
+        switch (info.kind)
+        {
+            case scope::ParamKind::choice:
+                layout.add (std::make_unique<AudioParameterChoice> (id, info.name,
+                                                                    StringArray::fromTokens (info.choices, "|", ""),
+                                                                    (int) info.def));
+                break;
+            case scope::ParamKind::real:
+                layout.add (std::make_unique<AudioParameterFloat> (id, info.name,
+                                                                   NormalisableRange<float> (info.min, info.max, info.step, info.skew),
+                                                                   info.def,
+                                                                   AudioParameterFloatAttributes().withLabel (info.label)));
+                break;
+            case scope::ParamKind::toggle:
+                // The standalone app starts on the test tone so it shows something.
+                layout.add (std::make_unique<AudioParameterBool> (id, info.name,
+                                                                  i == scope::pTest ? JUCEApplicationBase::isStandaloneApp()
+                                                                                    : info.def > 0.5f));
+                break;
+        }
+    }
+
+    // Which network stream this instance feeds. A setting, not a look, so it
+    // is not automatable and is not part of the parameter table.
+    StringArray streams { "Off" };
+    for (int i = 1; i <= net::maxStreams; ++i)
+        streams.add ("Stream " + String (i));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { streamParamId, 1 }, "Network stream", streams, 0,
+                                                        AudioParameterChoiceAttributes().withAutomatable (false)));
     return layout;
+}
+
+void CircleScopeProcessor::cycleParameter (int paramIndex)
+{
+    if (auto* param = apvts.getParameter (scope::paramTable[paramIndex].id))
+    {
+        const int steps = juce::jmax (2, param->getNumSteps());
+        const int current = juce::roundToInt (param->getValue() * (float) (steps - 1));
+        param->beginChangeGesture();
+        param->setValueNotifyingHost ((float) ((current + 1) % steps) / (float) (steps - 1));
+        param->endChangeGesture();
+    }
+}
+
+void CircleScopeProcessor::timerCallback()
+{
+    for (int i = 0; i < scope::numParams; ++i)
+    {
+        const int value = pendingCc[i].exchange (-1);
+        if (value >= 0)
+            if (auto* param = apvts.getParameter (scope::paramTable[i].id))
+                param->setValueNotifyingHost ((float) value / 127.0f);
+    }
 }
 
 void CircleScopeProcessor::prepareToPlay (double sampleRate, int)
 {
-    currentSampleRate.store (sampleRate);
+    source.sampleRate.store (sampleRate);
 }
 
 bool CircleScopeProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -56,9 +111,20 @@ bool CircleScopeProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
     return layouts.getMainInputChannelSet() == out;
 }
 
-void CircleScopeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void CircleScopeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
+
+    // Each parameter answers to one MIDI controller (see ScopeParams.h).
+    for (const auto metadata : midi)
+    {
+        const auto message = metadata.getMessage();
+        if (! message.isController())
+            continue;
+        for (int i = 0; i < scope::numParams; ++i)
+            if (scope::paramTable[i].cc == message.getControllerNumber())
+                pendingCc[i].store (message.getControllerValue());
+    }
 
     const int numIn = getTotalNumInputChannels();
     for (int ch = numIn; ch < getTotalNumOutputChannels(); ++ch)
@@ -67,29 +133,16 @@ void CircleScopeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const int numSamples = buffer.getNumSamples();
 
     // Audio passes through untouched; we only copy it for display.
-    if (apvts.getRawParameterValue ("test")->load() > 0.5f)
+    if (source.get (scope::pTest) > 0.5f)
     {
-        const double sr = currentSampleRate.load();
-        const double inc20 = juce::MathConstants<double>::twoPi * 20.0 / sr;
-        const double inc60 = juce::MathConstants<double>::twoPi * 60.0 / sr;
-        const double inc605 = juce::MathConstants<double>::twoPi * 60.5 / sr;
-
         constexpr int chunk = 256;
         float left[chunk], right[chunk];
         for (int pos = 0; pos < numSamples; pos += chunk)
         {
             const int n = juce::jmin (chunk, numSamples - pos);
-            for (int i = 0; i < n; ++i)
-            {
-                const float base = 0.7f * (float) std::sin (phase20);
-                left[i] = base + 0.3f * (float) std::sin (phase60);
-                right[i] = base + 0.3f * (float) std::sin (phase605);
-                phase20 = std::fmod (phase20 + inc20, juce::MathConstants<double>::twoPi);
-                phase60 = std::fmod (phase60 + inc60, juce::MathConstants<double>::twoPi);
-                phase605 = std::fmod (phase605 + inc605, juce::MathConstants<double>::twoPi);
-            }
-            rings[0].push (left, n);
-            rings[1].push (right, n);
+            testTone.render (left, right, n, source.sampleRate.load());
+            source.rings[0].push (left, n);
+            source.rings[1].push (right, n);
         }
         return;
     }
@@ -97,8 +150,8 @@ void CircleScopeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (numIn == 0)
         return;
 
-    rings[0].push (buffer.getReadPointer (0), numSamples);
-    rings[1].push (buffer.getReadPointer (numIn > 1 ? 1 : 0), numSamples);
+    source.rings[0].push (buffer.getReadPointer (0), numSamples);
+    source.rings[1].push (buffer.getReadPointer (numIn > 1 ? 1 : 0), numSamples);
 }
 
 juce::AudioProcessorEditor* CircleScopeProcessor::createEditor()

@@ -7,11 +7,12 @@ namespace
     constexpr const char* lineVertexShader = R"(
         attribute vec2 position;
         attribute vec4 colour;
+        uniform vec4 transform;   // xy scale, zw offset
         varying vec4 vColour;
         void main()
         {
             vColour = colour;
-            gl_Position = vec4 (position, 0.0, 1.0);
+            gl_Position = vec4 (position * transform.xy + transform.zw, 0.0, 1.0);
         }
     )";
 
@@ -48,10 +49,8 @@ namespace
         {
             vec3 sum = vec3 (0.0);
             float total = 0.0;
-            for (int i = -48; i <= 48; ++i)
+            for (int i = -radius; i <= radius; ++i)
             {
-                if (i < -radius || i > radius)
-                    continue;
                 float w = exp (-float (i * i) / (2.0 * sigma * sigma));
                 vec2 p = uv + texelStep * float (i);
                 sum += w * (texture2D (sourceA, p).rgb + mixB * texture2D (sourceB, p).rgb);
@@ -87,7 +86,8 @@ namespace
     constexpr int panelMargin = 16;        // logical px around each square
     constexpr float baseExposure = 1.2f;   // at 100 % brightness
     constexpr float haloGain = 1.5f;
-    constexpr int maxBlurRadius = 48;      // must match the shader loop bound
+    constexpr int maxBlurRadius = 48;
+    constexpr int previewMaxWidth = 640;
     constexpr float barY = -0.95f;         // correlation bar height in the goniometer
 
     const juce::Colour leftColour (0xff1d9e75), rightColour (0xffd85a30), goniometerColour (0xff7f77dd);
@@ -113,7 +113,7 @@ namespace
 }
 
 //==============================================================================
-void ScopeComponent::RenderTarget::ensure (int w, int h)
+void ScopeComponent::RenderTarget::ensure (int w, int h, bool halfFloat)
 {
     w = juce::jmax (1, w);
     h = juce::jmax (1, h);
@@ -126,7 +126,10 @@ void ScopeComponent::RenderTarget::ensure (int w, int h)
     // 8-bit rounding ghosts, and bright overlaps can exceed 1.0.
     glGenTextures (1, &texture);
     glBindTexture (GL_TEXTURE_2D, texture);
-    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+    if (halfFloat)
+        glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+    else
+        glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -159,7 +162,7 @@ void ScopeComponent::RenderTarget::bind() const
 }
 
 //==============================================================================
-ScopeComponent::ScopeComponent (CircleScopeProcessor& p) : processor (p)
+ScopeComponent::ScopeComponent (ScopeSource& s, bool labels) : source (&s), showLabels (labels)
 {
     for (int ch = 0; ch < 2; ++ch)
     {
@@ -170,13 +173,39 @@ ScopeComponent::ScopeComponent (CircleScopeProcessor& p) : processor (p)
     freqScratch.resize ((size_t) blockSize);
 
     setOpaque (true);
+
+    // macOS only offers modern GL through a core profile. Elsewhere take the
+    // driver's default context: a Raspberry Pi 4 has no 3.2 core profile, and
+    // everything here also runs on GL 2.1 with the usual extensions.
+   #if JUCE_MAC
     context.setOpenGLVersionRequired (juce::OpenGLContext::openGL3_2);
+   #endif
     context.setRenderer (this);
     context.setContinuousRepainting (true);
-    context.setComponentPaintingEnabled (true);   // for the text labels
+    context.setComponentPaintingEnabled (showLabels);
     context.attachTo (*this);
 
-    startTimerHz (10);
+    if (showLabels)
+        startTimerHz (10);
+}
+
+void ScopeComponent::setView (View v)
+{
+    viewX.store (v.x);
+    viewY.store (v.y);
+    viewW.store (juce::jmax (1.0e-4f, v.w));
+    viewH.store (juce::jmax (1.0e-4f, v.h));
+}
+
+void ScopeComponent::setSource (ScopeSource& s)
+{
+    source.store (&s);
+}
+
+juce::String ScopeComponent::getRendererName() const
+{
+    const juce::SpinLock::ScopedLockType lock (rendererNameLock);
+    return rendererName;
 }
 
 ScopeComponent::~ScopeComponent()
@@ -214,7 +243,7 @@ juce::Colour ScopeComponent::colourForFrequency (double hz)
 //==============================================================================
 void ScopeComponent::timerCallback()
 {
-    const int layout = (int) processor.apvts.getRawParameterValue ("layout")->load();
+    const int layout = (int) source.load()->get (scope::pLayout);
     if (shownLayout.exchange (layout) != layout)
         repaint();
 }
@@ -283,6 +312,14 @@ void ScopeComponent::paint (juce::Graphics& g)
 //==============================================================================
 void ScopeComponent::newOpenGLContextCreated()
 {
+    {
+        auto text = [] (GLenum name) { return juce::String::fromUTF8 ((const char*) glGetString (name)); };
+        const auto name = text (GL_RENDERER) + ", GL " + text (GL_VERSION);
+        juce::Logger::writeToLog ("CircleScope renderer: " + name);
+        const juce::SpinLock::ScopedLockType lock (rendererNameLock);
+        rendererName = name;
+    }
+
     lineShader = buildShader (context, lineVertexShader, lineFragmentShader);
     blurShader = buildShader (context, fullScreenVertexShader, blurFragmentShader);
     compositeShader = buildShader (context, fullScreenVertexShader, compositeFragmentShader);
@@ -297,7 +334,8 @@ void ScopeComponent::newOpenGLContextCreated()
     linePosition = glGetAttribLocation (lineShader->getProgramID(), "position");
     lineColour = glGetAttribLocation (lineShader->getProgramID(), "colour");
 
-    glGenVertexArrays (1, &vao);
+    if (glGenVertexArrays != nullptr)   // optional on a GL 2.1 context
+        glGenVertexArrays (1, &vao);
     glGenBuffers (1, &vbo);
 }
 
@@ -305,6 +343,8 @@ void ScopeComponent::openGLContextClosing()
 {
     for (auto* target : { &accumTarget, &currentTarget, &blurTempTarget, &blurTarget })
         target->release();
+    for (auto& target : previewTargets)
+        target.release();
     if (vbo != 0) glDeleteBuffers (1, &vbo);
     if (vao != 0) glDeleteVertexArrays (1, &vao);
     vbo = vao = 0;
@@ -316,19 +356,22 @@ void ScopeComponent::openGLContextClosing()
 //==============================================================================
 ScopeComponent::Settings ScopeComponent::readSettings() const
 {
-    auto& apvts = processor.apvts;
-    auto value = [&apvts] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
+    const auto& src = *source.load();
+    using namespace scope;
 
-    return { value ("mode") > 0.5f,
-             value ("colour") > 0.5f,
-             (Layout) juce::jlimit (0, 2, (int) value ("layout")),
-             value ("window"),
-             value ("delay"),
-             value ("afterglow"),
-             value ("brightness") * 0.01f,
-             value ("contrast") * 0.01f,
-             value ("blur"),
-             processor.currentSampleRate.load() };
+    return { src.get (pMode) > 0.5f,
+             src.get (pColour) > 0.5f,
+             src.get (pGuides) > 0.5f,
+             (Layout) juce::jlimit (0, 2, (int) src.get (pLayout)),
+             src.get (pWindow),
+             src.get (pDelay),
+             src.get (pAfterglow),
+             src.get (pBrightness) * 0.01f,
+             src.get (pContrast) * 0.01f,
+             src.get (pBlur),
+             src.get (pLowCut),
+             src.get (pHighCut),
+             juce::jmax (1000.0, src.sampleRate.load()) };
 }
 
 ScopeComponent::Range ScopeComponent::computeRange (const Settings& s) const
@@ -343,20 +386,95 @@ ScopeComponent::Range ScopeComponent::computeRange (const Settings& s) const
     return r;
 }
 
-void ScopeComponent::analyse (int channel)
+// Low cut / high cut as per-bin gains, with a half-octave raised-cosine
+// slope at each edge so the band limits do not ring.
+void ScopeComponent::updateBandWeights (const Settings& s)
+{
+    if (juce::exactlyEqual (s.lowCutHz, weightsLowCut) && juce::exactlyEqual (s.highCutHz, weightsHighCut)
+        && juce::exactlyEqual (s.sampleRate, weightsSampleRate))
+        return;
+
+    weightsLowCut = s.lowCutHz;
+    weightsHighCut = s.highCutHz;
+    weightsSampleRate = s.sampleRate;
+
+    const bool lowActive = s.lowCutHz > 20.5f, highActive = s.highCutHz < 19999.5f;
+    bandLimited = lowActive || highActive;
+    if (! bandLimited)
+        return;
+
+    // 0 well below the cut, 1 well above it.
+    auto edge = [] (double hz, double cutHz)
+    {
+        const double t = juce::jlimit (0.0, 1.0, std::log2 (juce::jmax (hz, 1.0e-3) / cutHz) * 2.0 + 0.5);
+        return 0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * t);
+    };
+
+    bandWeights.resize ((size_t) blockSize / 2 + 1);
+    for (int k = 0; k <= blockSize / 2; ++k)
+    {
+        const double hz = (double) k * s.sampleRate / (double) blockSize;
+        double w = 1.0;
+        if (lowActive)  w *= edge (hz, (double) s.lowCutHz);
+        if (highActive) w *= 1.0 - edge (hz, (double) s.highCutHz);
+        bandWeights[(size_t) k] = (float) w;
+    }
+}
+
+void ScopeComponent::analyse (int channel, const Settings&)
 {
     auto& samples = block[channel];
-    processor.rings[channel].readLatest (samples.data(), blockSize);
+    source.load()->rings[channel].readLatest (samples.data(), blockSize);
 
     // Analytic signal: zero the negative frequencies, double the positive.
     for (int i = 0; i < blockSize; ++i)
         timeScratch[(size_t) i] = { samples[(size_t) i], 0.0f };
     fft.perform (timeScratch.data(), freqScratch.data(), false);
+
+    if (bandLimited)
+        for (int k = 0; k <= blockSize / 2; ++k)
+            freqScratch[(size_t) k] *= bandWeights[(size_t) k];
+
     for (int k = 1; k < blockSize / 2; ++k)
         freqScratch[(size_t) k] *= 2.0f;
     for (int k = blockSize / 2 + 1; k < blockSize; ++k)
         freqScratch[(size_t) k] = 0.0f;
     fft.perform (freqScratch.data(), analytic[channel].data(), true);
+
+    // Everything that reads the plain samples (delay embed, goniometer,
+    // correlation) should see the band-limited signal too.
+    if (bandLimited)
+        for (int i = 0; i < blockSize; ++i)
+            samples[(size_t) i] = analytic[channel][(size_t) i].real();
+}
+
+//==============================================================================
+ScopeComponent::PanelPlacement ScopeComponent::placePanel (Layout layout, int panel, int w, int h, int margin) const
+{
+    // Lay the panels out on the whole virtual canvas, then shift by where
+    // this component's part of it starts. GL's y axis points up.
+    const float vx = viewX.load(), vy = viewY.load(), vw = viewW.load(), vh = viewH.load();
+    const int canvasW = juce::roundToInt ((float) w / vw), canvasH = juce::roundToInt ((float) h / vh);
+    const int originX = juce::roundToInt (vx * (float) canvasW);
+    const int originY = juce::roundToInt ((1.0f - vy - vh) * (float) canvasH);
+
+    const auto b = panelBounds (layout, panel, canvasW, canvasH, margin).translated (-originX, -originY);
+    return { (float) b.getWidth() / (float) w,
+             (float) b.getHeight() / (float) h,
+             2.0f * (float) b.getCentreX() / (float) w - 1.0f,
+             2.0f * (float) b.getCentreY() / (float) h - 1.0f,
+             b.getIntersection ({ 0, 0, w, h }) };
+}
+
+// Aims the line shader at a panel. False if none of it is on this screen.
+bool ScopeComponent::usePanel (const PanelPlacement& p)
+{
+    if (p.scissor.isEmpty())
+        return false;
+
+    glScissor (p.scissor.getX(), p.scissor.getY(), p.scissor.getWidth(), p.scissor.getHeight());
+    setLineTransform (p.scaleX, p.scaleY, p.offsetX, p.offsetY);
+    return true;
 }
 
 void ScopeComponent::updateCorrelation (const Range& r)
@@ -562,6 +680,12 @@ void ScopeComponent::useLineShader (float alphaScale)
 {
     lineShader->use();
     lineShader->setUniform ("alphaScale", alphaScale);
+    setLineTransform (1.0f, 1.0f, 0.0f, 0.0f);
+}
+
+void ScopeComponent::setLineTransform (float scaleX, float scaleY, float offsetX, float offsetY)
+{
+    lineShader->setUniform ("transform", scaleX, scaleY, offsetX, offsetY);
 }
 
 //==============================================================================
@@ -590,13 +714,17 @@ void ScopeComponent::renderOpenGL()
     lastFrameMs = now;
     const float keep = s.afterglowMs >= 1.0f ? (float) std::exp (-dt / (double) s.afterglowMs) : 0.0f;
 
-    analyse (0);
-    analyse (1);
+    updateBandWeights (s);
+    analyse (0, s);
+    analyse (1, s);
     updateCorrelation (range);
 
+    // Sizes that depend on the panel use the canvas, so every tile of a wall
+    // draws lines of the same thickness.
     const int margin = juce::roundToInt ((float) panelMargin * scale);
     const int panels = numPanels (s.layout);
-    const int firstSide = panelBounds (s.layout, 0, w, h, margin).getWidth();
+    const int firstSide = panelBounds (s.layout, 0, juce::roundToInt ((float) w / viewW.load()),
+                                       juce::roundToInt ((float) h / viewH.load()), margin).getWidth();
     const float lineHalfWidth = 1.2f * scale / (float) firstSide;   // ~2.4 px thick, in NDC
 
     accumTarget.ensure (w, h);
@@ -604,7 +732,8 @@ void ScopeComponent::renderOpenGL()
     blurTempTarget.ensure (w / 2, h / 2);
     blurTarget.ensure (w / 2, h / 2);
 
-    glBindVertexArray (vao);
+    if (vao != 0)
+        glBindVertexArray (vao);
     glEnable (GL_BLEND);
 
     // 1. Afterglow decays (dst *= keep); the live-beam buffer starts empty.
@@ -623,8 +752,13 @@ void ScopeComponent::renderOpenGL()
     //    steady state matches "off", and to the live beam at full strength
     //    so a shape that just moved is never dim.
     glBlendFunc (GL_SRC_ALPHA, GL_ONE);
+    glEnable (GL_SCISSOR_TEST);
     for (int panel = 0; panel < panels; ++panel)
     {
+        const auto placement = placePanel (s.layout, panel, w, h, margin);
+
+        // Always build the vertices, even for a panel that is off this
+        // screen: that keeps the auto-gain state running.
         vertices.clear();
         switch (s.layout)
         {
@@ -640,15 +774,15 @@ void ScopeComponent::renderOpenGL()
                 break;
         }
 
-        const auto b = panelBounds (s.layout, panel, w, h, margin);
         for (auto* target : { &accumTarget, &currentTarget })
         {
-            glBindFramebuffer (GL_FRAMEBUFFER, target->fbo);
-            glViewport (b.getX(), b.getY(), b.getWidth(), b.getHeight());
+            target->bind();
             useLineShader (target == &accumTarget ? 1.0f - keep : 1.0f);
-            drawVertices (linePosition, lineColour);
+            if (usePanel (placement))
+                drawVertices (linePosition, lineColour);
         }
     }
+    glDisable (GL_SCISSOR_TEST);
 
     // 3. Gaussian blur of (afterglow + beam) at half resolution, two passes.
     const int blurRadius = juce::jlimit (0, maxBlurRadius, juce::roundToInt (s.blurPx * scale * 0.5f));
@@ -680,17 +814,24 @@ void ScopeComponent::renderOpenGL()
     // 4. Screen: guides (unaffected by image controls), then the composite on top.
     glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) screenFbo);
     glBlendFunc (GL_SRC_ALPHA, GL_ONE);
+    glViewport (0, 0, w, h);
     useLineShader (1.0f);
-    for (int panel = 0; panel < panels; ++panel)
+    if (s.guides)
     {
-        const auto b = panelBounds (s.layout, panel, w, h, margin);
-        glViewport (b.getX(), b.getY(), b.getWidth(), b.getHeight());
-        vertices.clear();
-        if (s.layout == Layout::midSide)
-            addGoniometerGuides (lineHalfWidth * 0.5f);
-        else
-            addTrajectoryGuides (lineHalfWidth * 0.5f);
-        drawVertices (linePosition, lineColour);
+        glEnable (GL_SCISSOR_TEST);
+        for (int panel = 0; panel < panels; ++panel)
+        {
+            if (! usePanel (placePanel (s.layout, panel, w, h, margin)))
+                continue;
+
+            vertices.clear();
+            if (s.layout == Layout::midSide)
+                addGoniometerGuides (lineHalfWidth * 0.5f);
+            else
+                addTrajectoryGuides (lineHalfWidth * 0.5f);
+            drawVertices (linePosition, lineColour);
+        }
+        glDisable (GL_SCISSOR_TEST);
     }
 
     glViewport (0, 0, w, h);
@@ -709,5 +850,68 @@ void ScopeComponent::renderOpenGL()
 
     for (int unit = 2; unit >= 0; --unit)
         bindTexture (unit, 0);
-    glBindVertexArray (0);
+
+    capturePreview ((GLuint) screenFbo, w, h);
+
+    if (vao != 0)
+        glBindVertexArray (0);
+
+    ++framesInWindow;
+    if (now - fpsWindowStartMs >= 1000.0)
+    {
+        framesPerSecond.store (fpsWindowStartMs > 0.0 ? (float) (framesInWindow * 1000.0 / (now - fpsWindowStartMs)) : 0.0f);
+        fpsWindowStartMs = now;
+        framesInWindow = 0;
+    }
+}
+
+// Shrinks the finished frame by repeated halving (each step a clean 2x2
+// average) and hands the small copy to onPreview.
+void ScopeComponent::capturePreview (GLuint screenFbo, int w, int h)
+{
+    const int interval = previewIntervalMs.load();
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (interval <= 0 || onPreview == nullptr || now - lastPreviewMs < (double) interval)
+        return;
+    lastPreviewMs = now;
+
+    glDisable (GL_BLEND);
+    GLuint from = screenFbo;
+    int fromW = w, fromH = h;
+    const RenderTarget* last = nullptr;
+
+    for (auto& target : previewTargets)
+    {
+        const int toW = juce::jmax (1, fromW / 2), toH = juce::jmax (1, fromH / 2);
+        target.ensure (toW, toH, false);
+        glBindFramebuffer (GL_READ_FRAMEBUFFER, from);
+        glBindFramebuffer (GL_DRAW_FRAMEBUFFER, target.fbo);
+        glBlitFramebuffer (0, 0, fromW, fromH, 0, 0, toW, toH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+        last = &target;
+        from = target.fbo;
+        fromW = toW;
+        fromH = toH;
+        if (toW <= previewMaxWidth)
+            break;
+    }
+
+    previewPixels.resize ((size_t) (fromW * fromH * 4));
+    glBindFramebuffer (GL_READ_FRAMEBUFFER, last->fbo);
+    glPixelStorei (GL_PACK_ALIGNMENT, 1);
+    glReadPixels (0, 0, fromW, fromH, GL_RGBA, GL_UNSIGNED_BYTE, previewPixels.data());
+    glBindFramebuffer (GL_FRAMEBUFFER, screenFbo);
+    glEnable (GL_BLEND);
+
+    juce::Image image (juce::Image::RGB, fromW, fromH, false);
+    {
+        juce::Image::BitmapData pixels (image, juce::Image::BitmapData::writeOnly);
+        for (int y = 0; y < fromH; ++y)
+        {
+            const auto* src = previewPixels.data() + (size_t) ((fromH - 1 - y) * fromW * 4);   // GL rows run bottom-up
+            for (int x = 0; x < fromW; ++x, src += 4)
+                pixels.setPixelColour (x, y, juce::Colour (src[0], src[1], src[2]));
+        }
+    }
+    onPreview (image);
 }
