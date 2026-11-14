@@ -137,8 +137,10 @@ public:
         else
         {
             using Peer = juce::ComponentPeer;
+            // The maximise button is what makes the green button on macOS the
+            // usual "full screen in a Space of its own" one instead of a zoom.
             addToDesktop (Peer::windowHasTitleBar | Peer::windowIsResizable | Peer::windowHasCloseButton
-                          | Peer::windowHasMinimiseButton | Peer::windowAppearsOnTaskbar);
+                          | Peer::windowHasMinimiseButton | Peer::windowHasMaximiseButton | Peer::windowAppearsOnTaskbar);
         }
 
         setBounds (bounds);
@@ -442,6 +444,12 @@ private:
     void boundsChanged()
     {
         if (fullScreen || ! isOnDesktop() || config.windowBounds == getBounds())
+            return;
+
+        // Not while the system has the window full screen (the green button),
+        // or on the way there: the size to remember is the window's own.
+        const auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (getBounds());
+        if (getPeer()->isFullScreen() || (display != nullptr && getHeight() >= display->totalArea.getHeight()))
             return;
 
         config.windowBounds = getBounds();
