@@ -420,7 +420,7 @@ private:
             StreamReceiver::LayerList heard;
             const int count = receiver.getLayers (stream, heard);
             for (int i = 0; i < count; ++i)
-                list[(size_t) i] = { heard[(size_t) i].source, view };
+                list[(size_t) i] = { heard[(size_t) i].feed, view };
             return count;
         });
     }

@@ -7,7 +7,9 @@
 // nothing else: no controls, no buttons, no labels, no cursor. It uses kiosk
 // mode, so the menu bar and Dock hide while it is up. This works the same
 // inside a host (Logic) and in the standalone app, because the plugin's own
-// editor window is left alone.
+// editor window is left alone. A host keeps its plugin windows floating
+// above ordinary ones, so this window sits a level above those (that of a
+// pop-up menu), or the editor would stay in view on top of it.
 //
 // Keys:
 //   Esc / F   exit (so does a double-click)
@@ -17,8 +19,12 @@
 class FullScreenWindow : public juce::Component
 {
 public:
+    // How many of these are up, over all the instances in the host. While
+    // one is, no editor draws its scope: it would only be drawing behind it.
+    static inline std::atomic<int> numShowing { 0 };
+
     FullScreenWindow (CircleScopeProcessor& p, juce::Rectangle<int> displayArea, std::function<void()> onExit)
-        : processor (p), scope (p.source, false), exitCallback (std::move (onExit))
+        : processor (p), scope (p.feed, false), exitCallback (std::move (onExit))
     {
         setOpaque (true);
         setWantsKeyboardFocus (true);
@@ -29,15 +35,18 @@ public:
         setMouseCursor (juce::MouseCursor::NoCursor);
 
         setBounds (displayArea);
-        addToDesktop (0);
+        setAlwaysOnTop (true);
+        addToDesktop (juce::ComponentPeer::windowIsTemporary);   // with always on top: the pop-up menu level
         setVisible (true);
         juce::Desktop::getInstance().setKioskModeComponent (this, false);
         toFront (true);
         grabKeyboardFocus();
+        ++numShowing;
     }
 
     ~FullScreenWindow() override
     {
+        --numShowing;
         if (juce::Desktop::getInstance().getKioskModeComponent() == this)
             juce::Desktop::getInstance().setKioskModeComponent (nullptr, false);
     }

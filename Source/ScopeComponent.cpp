@@ -4,15 +4,56 @@ using namespace juce::gl;
 
 namespace
 {
+    // Points arrive in the scene's coordinates (a layer's curve) or a plane's
+    // (its guides, at depth 0). They go through the camera, or the plane as
+    // the camera sees it, and the perspective, which leaves
+    // them in panel coordinates (square, so the same size both ways), and
+    // from there to the screen. A corner of a line also knows the segment's
+    // other end, and steps sideways from the line as it runs on screen, so a
+    // line is equally thick however its plane is turned, and as thick as
+    // suits this screen whoever made the points.
     constexpr const char* lineVertexShader = R"(
         attribute vec2 position;
+        attribute vec3 other;     // xy: the segment's other end, z: which side, times this line's relative thickness
+        attribute vec2 depth;     // z of this point and of the other end
         attribute vec4 colour;
-        uniform vec4 transform;   // xy scale, zw offset
+        uniform mat3 orient;      // the points' space (the scene, or a plane) to the viewer's
+        uniform vec3 shift;       // and where its centre is for the viewer
+        uniform float eye;        // distance of the eye from the panel's centre
+        uniform float halfWidth;  // half a line's thickness, in panel units
+        uniform vec4 transform;   // panel to clip space: xy scale, zw offset
         varying vec4 vColour;
+
+        vec2 project (vec3 q)
+        {
+            return q.xy * (eye / (eye - q.z));
+        }
+
         void main()
         {
             vColour = colour;
-            gl_Position = vec4 (position * transform.xy + transform.zw, 0.0, 1.0);
+            vec3 a = orient * vec3 (position, depth.x) + shift;
+            vec3 b = orient * vec3 (other.xy, depth.y) + shift;
+
+            // The camera can stand among the lines. What is behind the eye
+            // is left out, and a segment that passes it is cut off just in
+            // front of it.
+            float limit = eye - 0.05;
+            if (a.z > limit && b.z > limit)
+            {
+                gl_Position = vec4 (2.0, 2.0, 2.0, 1.0);
+                return;
+            }
+            if (a.z > limit)
+                a = mix (b, a, (limit - b.z) / (a.z - b.z));
+            else if (b.z > limit)
+                b = mix (a, b, (limit - a.z) / (b.z - a.z));
+
+            vec2 here = project (a);
+            vec2 along = project (b) - here;
+            float len = length (along);
+            vec2 across = len > 1.0e-6 ? vec2 (-along.y, along.x) / len : vec2 (0.0, 1.0);
+            gl_Position = vec4 ((here + across * other.z * halfWidth) * transform.xy + transform.zw, 0.0, 1.0);
         }
     )";
 
@@ -22,6 +63,242 @@ namespace
         void main()
         {
             gl_FragColor = vec4 (vColour.rgb, vColour.a * alphaScale);
+        }
+    )";
+
+    // The Field mode. A plane of the scene is drawn as one large sheet, a
+    // cut through the field; the
+    // vertex shader says where in the scene each corner is, and that is
+    // handed on to every pixel. The perspective is left to the graphics
+    // card (w), so a sheet that passes behind the eye is cut off properly.
+    constexpr const char* fieldVertexShader = R"(
+        attribute vec2 position;  // on the plane
+        uniform mat3 plane;       // the plane to the scene
+        uniform vec3 origin;      // the plane's centre in the scene
+        uniform mat3 camera;      // the scene to the viewer's space:
+        uniform vec3 cameraShift; // turned, then shifted
+        uniform float eye;
+        uniform vec4 transform;   // panel to clip space: xy scale, zw offset
+        varying vec3 where;       // this point in the scene
+
+        void main()
+        {
+            where = origin + plane * vec3 (position, 0.0);
+            vec3 q = camera * where + cameraShift;
+            float w = eye - q.z;
+            gl_Position = vec4 (q.xy * eye * transform.xy + transform.zw * w, 0.0, w);
+        }
+    )";
+
+    // What both field shaders share: the field of one source at a point.
+    //
+    // As dots, a source fills space with standing waves along its three
+    // axes: a tone gives cos (x) * cos (y) * cos (z) times how far the tone
+    // is in its swing, a grid of dots with opposite neighbours. A product
+    // of cosines is a sum of four waves running along the diagonals, and
+    // the sum over all the tones of one such wave is the sound itself,
+    // mirrored about the frame's moment. That is what a row of the waves
+    // texture holds, out to "reach": so four look-ups give the field of
+    // the whole sound. As rings it is simpler: the row holds the sound
+    // going back in time, and a point shows what left the source as long
+    // ago as it is far.
+    //
+    // The sound only reaches so far. Past that it is read back and forth
+    // again, so the field goes on for ever, repeating like a reflection.
+    //
+    // Source k has rows 8k to 8k + 7. Without the EQ the first is its whole
+    // sound. With it they are the sound in eight bands of pitch, lowest
+    // first, and a point gets the bands about the pitch the curve gives
+    // for its distance from the source, so each distance has its own
+    // range of pitch.
+    constexpr const char* fieldCommon = R"(
+        uniform sampler2D waves;
+        uniform float reach;
+        uniform float rings;          // 1: rings, 0: dots
+        uniform float eq;             // 1: the EQ is on
+        uniform float eqWidth;        // the width of the range of pitch let through, in bands
+        uniform float curve[16];      // the pitch at each distance, 0..1 over the eight bands
+
+        float wave (float along, float row)
+        {
+            float t = 1.0 - abs (1.0 - mod (abs (along) / reach, 2.0));
+            return texture2D (waves, vec2 ((t * 2047.0 + 0.5) / 2048.0, (row + 0.5) / 64.0)).r;
+        }
+
+        float shape (vec3 q, float row)
+        {
+            if (rings > 0.5)
+                return wave (length (q), row);
+
+            return 0.25 * (wave (q.x + q.y + q.z, row) + wave (q.x + q.y - q.z, row)
+                           + wave (q.x - q.y + q.z, row) + wave (q.y + q.z - q.x, row));
+        }
+
+        float field (vec3 q, float firstRow)
+        {
+            if (eq < 0.5)
+                return shape (q, firstRow);
+
+            float along = clamp (length (q) / 2.0, 0.0, 1.0) * 15.0;
+            int i = int (min (floor (along), 14.0));
+            float pitch = mix (curve[i], curve[i + 1], along - float (i)) * 8.0;
+
+            float a = 0.0;
+            for (int b = 0; b < 8; ++b)
+            {
+                float lets = clamp (1.0 + 0.5 * eqWidth - abs (float (b) + 0.5 - pitch), 0.0, 1.0);
+                if (lets > 0.01)
+                    a += lets * shape (q, firstRow + float (b));
+            }
+            return a;
+        }
+    )";
+
+    // The field on a plane. Positive is the source's colour and negative
+    // the complement, the amplitude is how much of it, it fades with
+    // distance from the source, and the sources are added as light.
+    const juce::String fieldFragmentShader = juce::String (fieldCommon) + R"(
+        uniform int count;
+        uniform vec3 sourceAt[8];
+        uniform mat3 sourceAxes[8];   // the scene to the source's own axes
+        uniform vec3 sourceColour[8];
+        uniform float sourceFade[8];
+        uniform float alphaScale;
+        varying vec3 where;
+
+        void main()
+        {
+            vec3 light = vec3 (0.0);
+            for (int k = 0; k < 8; ++k)
+            {
+                if (k >= count)
+                    break;
+
+                vec3 q = sourceAxes[k] * (where - sourceAt[k]);
+                float a = field (q, float (k) * 8.0) * max (0.0, 1.0 - sourceFade[k] * length (q));
+                light += abs (a) * (a > 0.0 ? sourceColour[k] : vec3 (1.0) - sourceColour[k]);
+            }
+            gl_FragColor = vec4 (light, alphaScale);
+        }
+    )";
+
+    // The Field mode as a volume. Every pixel looks along a line from the
+    // eye into the scene; the shader walks that line through a ball that
+    // holds the field, and at every step adds the light of the field there
+    // (as fieldFragmentShader works it out) and lets it hide what comes
+    // after, by the density and how strong the field is there. Each pixel starts a different fraction of a
+    // step in, which turns the steps' banding into fine grain.
+    constexpr const char* volumeVertexShader = R"(
+        attribute vec2 position;
+        uniform vec4 transform;   // panel to clip space: xy scale, zw offset
+        varying vec2 panel;       // this pixel in the panel
+        void main()
+        {
+            panel = (position - transform.zw) / transform.xy;
+            gl_Position = vec4 (position, 0.0, 1.0);
+        }
+    )";
+
+    const juce::String volumeFragmentShader = juce::String (fieldCommon) + R"(
+        uniform int count;
+        uniform vec3 sourceAt[8];
+        uniform mat3 sourceAxes[8];
+        uniform vec3 sourceColour[8];
+        uniform float sourceFade[8];
+        uniform mat3 cameraBack;  // the viewer's space to the scene, for directions
+        uniform vec3 eyeAt;       // where the eye is in the scene
+        uniform float eye;
+        uniform float bound;      // radius of the ball that holds the field
+        uniform float endless;    // 1: nothing holds it, it goes on for ever
+        uniform float density;
+        uniform float lens;       // radius of the lens, in scene units; 0 is a pinhole
+        uniform float focus;      // how far in front of the eye things are sharp
+        varying vec2 panel;
+
+        void main()
+        {
+            vec3 start = eyeAt;
+            vec3 sight = normalize (vec3 (panel, -eye));
+            vec3 dir = cameraBack * sight;
+            float b = dot (start, dir);
+            float h = b * b - dot (start, start) + bound * bound;
+            vec3 light = vec3 (0.0);
+
+            // The stretch of the line to walk: through the ball, or, in an
+            // endless field, from a little in front of the eye to far off,
+            // in steps that grow with the distance.
+            float enter = 1.0, leave = 16.0;
+            if (endless < 0.5)
+            {
+                float root = sqrt (max (h, 0.0));
+                enter = max (-b - root, 0.0);
+                leave = root - b;
+            }
+
+            if (endless > 0.5 || (h > 0.0 && leave > enter))
+            {
+                float jitter = fract (sin (dot (gl_FragCoord.xy, vec2 (12.9898, 78.233))) * 43758.5453);
+                float spin = fract (sin (dot (gl_FragCoord.xy, vec2 (39.3468, 11.1351))) * 24634.6345) * 6.2832;
+                float through = 1.0;
+
+                for (int i = 0; i < 64; ++i)
+                {
+                    float f = (float (i) + jitter) / 64.0;
+                    float t = endless > 0.5 ? enter * pow (leave / enter, f) : mix (enter, leave, f);
+                    float pace = endless > 0.5 ? t * log (leave / enter) / 64.0 : (leave - enter) / 64.0;
+                    vec3 p = start + dir * t;
+
+                    // The depth of field. Light from a point reaches the
+                    // eye through every part of a lens, and only for points
+                    // at the focus distance does all of it land on the same
+                    // pixel. So every step looks through another part of
+                    // the lens: it is moved sideways by how far that part
+                    // is from the lens's middle, times how far off the
+                    // focus distance the step is. What is in focus stays
+                    // put, the rest is smeared over a disc.
+                    if (lens > 0.0)
+                    {
+                        float turn = float (i) * 2.39996 + spin;
+                        float wide = lens * sqrt ((mod (float (i) * 37.0, 64.0) + 0.5) / 64.0);
+                        float off = clamp (1.0 + t * sight.z / focus, -3.0, 3.0);
+                        p += cameraBack * vec3 (cos (turn), sin (turn), 0.0) * (wide * off);
+                    }
+
+                    vec3 glow = vec3 (0.0);
+                    float thick = 0.0;
+
+                    for (int k = 0; k < 8; ++k)
+                    {
+                        if (k >= count)
+                            break;
+
+                        vec3 q = sourceAxes[k] * (p - sourceAt[k]);
+                        float a = field (q, float (k) * 8.0);
+                        float dim = max (0.0, 1.0 - sourceFade[k] * length (q));
+
+                        // How solid a point is follows the amplitude, so the
+                        // shape of the sound's wave is the shape of a ball
+                        // from its edge to its middle: a smooth wave makes
+                        // soft clouds, a steep one hard-edged blocks. A
+                        // shell of a ring would hide all the shells inside
+                        // it, so rings let most of the light through.
+                        float m = abs (a) * dim * (rings > 0.5 ? 0.3 : 2.0);
+                        glow += m * (a > 0.0 ? sourceColour[k] : vec3 (1.0) - sourceColour[k]);
+                        thick += m;
+                    }
+
+                    // In an endless field the far away sinks into the dark.
+                    float covers = 1.0 - exp (-thick * density * pace);
+                    float haze = endless > 0.5 ? exp (-0.12 * t) : 1.0;
+                    light += through * covers * haze * glow / max (thick, 1.0e-5);
+                    through *= 1.0 - covers;
+                    if (through < 0.02)
+                        break;
+                }
+            }
+
+            // It goes into both the afterglow and the beam, so half each.
+            gl_FragColor = vec4 (0.5 * light, 1.0);
         }
     )";
 
@@ -110,16 +387,17 @@ namespace
         }
     )";
 
-    constexpr float plotRadius = 0.9f;     // where a full-scale pure tone lands
-    constexpr int maxPointsPerChannel = 4096;
+    using scope::plotRadius;
     constexpr int panelMargin = 16;        // logical px around each square
     constexpr float baseExposure = 1.2f;   // at 100 % brightness
     constexpr float haloGain = 1.5f;
     constexpr int maxBlurRadius = 48;
     constexpr int previewMaxWidth = 640;
     constexpr float barY = -0.95f;         // correlation bar height in the goniometer
+    constexpr float fieldSheet = 40.0f;    // half the side of a plane of a field: it goes on for ever, this is far enough
 
-    const juce::Colour leftColour (0xff1d9e75), rightColour (0xffd85a30), goniometerColour (0xff7f77dd);
+    using scope::leftColour;
+    using scope::rightColour;
     const juce::Colour backgroundColour (0xff09090b);
 
     std::unique_ptr<juce::OpenGLShaderProgram> buildShader (juce::OpenGLContext& ctx, const char* vs, const char* fs)
@@ -142,90 +420,46 @@ namespace
 }
 
 //==============================================================================
-// One layer of a scope: the analysis of one source, on a thread of its own,
-// and the buffers its picture builds up in. Lives on the GL thread.
+// One layer of a scope: the buffers its picture builds up in. Lives on the
+// GL thread.
 class ScopeComponent::LayerRenderer
 {
 public:
-    LayerRenderer (ScopeComponent& ownerToUse, const ScopeSource& sourceToDraw)
-        : owner (ownerToUse), source (sourceToDraw)
+    LayerRenderer (ScopeComponent& ownerToUse, const scope::CurveFeed& feedToDraw)
+        : owner (ownerToUse), feed (feedToDraw)
     {
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            block[ch].resize ((size_t) blockSize);
-            analytic[ch].resize ((size_t) blockSize);
-        }
-        timeScratch.resize ((size_t) blockSize);
-        freqScratch.resize ((size_t) blockSize);
-        thread.startThread();
     }
 
     ~LayerRenderer()
     {
-        thread.signalThreadShouldExit();
-        frameWanted.signal();
-        thread.stopThread (2000);
-        for (auto* target : { &accumTarget, &currentTarget, &blurTempTarget, &blurTarget })
+        for (auto* target : { &accumTarget, &currentTarget, &blurTempTarget, &blurTarget, &volumeTarget })
             target->release();
+        if (fieldTexture != 0)
+            glDeleteTextures (1, &fieldTexture);
     }
 
     // Brings accumTarget, currentTarget and blurTarget up to date.
-    void render (View, int w, int h, float scale, double dtMs);
+    void render (View, const scope::Camera& camera, int w, int h, float scale, double dtMs);
 
     ScopeComponent& owner;
-    const ScopeSource& source;
+    const scope::CurveFeed& feed;
     bool seen = true;                                // still asked for this frame
-    Settings shown {};                               // what the last render used
+    Look look {};                                    // what the last render used
+    std::shared_ptr<const scope::Frame> frame;       // and the frame it drew, if there is one yet
     int blurRadius = 0;
     RenderTarget accumTarget, currentTarget, blurTempTarget, blurTarget;
-    std::atomic<float> correlation { 1.0f };
 
 private:
-    // One analysed frame: the trace geometry of each panel, in panel
-    // coordinates, and the layout it was built for.
-    struct Frame
-    {
-        Layout layout = Layout::sideBySide;
-        std::vector<Vertex> panels[2];
-    };
+    void uploadField();
+    void useSources (juce::OpenGLShaderProgram&);
+    void drawField (const PanelPlacement&, const scope::Camera& camera, float alphaScale);
+    void drawVolume (const PanelPlacement&, const scope::Camera& camera);
 
-    struct AnalysisThread : juce::Thread
-    {
-        explicit AnalysisThread (LayerRenderer& o) : Thread ("CircleScope analysis"), layer (o) {}
-        void run() override { layer.runAnalysis(); }
-        LayerRenderer& layer;
-    };
+    RenderTarget volumeTarget;                       // the field as a volume, at half resolution
 
-    void runAnalysis();
-    Range computeRange (const Settings&) const;
-    void updateBandWeights (const Settings&);
-    void analyse (int channel);
-    void updateCorrelation (const Range&);
-    void addTrajectory (std::vector<Vertex>&, int channel, const Settings&, const Range&,
-                        std::optional<juce::Colour> colourOverride, float halfWidth);
-    void addGoniometer (std::vector<Vertex>&, const Settings&, const Range&, float halfWidth);
-
-    // Hand-over of frames from the analysis thread to the GL thread. The GL
-    // thread asks for the next frame as it starts drawing the current one.
-    Frame working, pending, front;                   // analysis thread, shared (frameLock), GL thread
-    juce::SpinLock frameLock;
-    bool pendingIsNew = false;
-    juce::WaitableEvent frameWanted;
-    std::atomic<float> lineHalfWidth { 0.004f };     // set by the GL thread, which knows the size
-
-    // Analysis thread only.
-    juce::dsp::FFT fft { fftOrder };
-    std::vector<float> block[2];
-    std::vector<std::complex<float>> analytic[2];    // z(t) = s(t) + i*H{s}(t)
-    std::vector<std::complex<float>> timeScratch, freqScratch;
-    std::vector<float> bandWeights;                  // per FFT bin, 0..N/2
-    float weightsLowCut = -1.0f, weightsHighCut = -1.0f;
-    double weightsSampleRate = 0.0;
-    bool bandLimited = false;
-    float gain[3] { 1.0f, 1.0f, 1.0f };              // L, R, goniometer
-    size_t blockStart[2] {};                         // absolute position of each block's first sample
-
-    AnalysisThread thread { *this };
+    GLuint fieldTexture = 0;                         // the sources' waves, one row each
+    const scope::Frame* fieldUploaded = nullptr;     // the frame whose waves are in it
+    std::vector<float> fieldPixels;
 };
 
 //==============================================================================
@@ -298,8 +532,8 @@ ScopeComponent::ScopeComponent (LayerProvider layerProvider, bool labels)
         startTimerHz (10);
 }
 
-ScopeComponent::ScopeComponent (const ScopeSource& source, bool labels)
-    : ScopeComponent ([&source] (LayerList& list) { list[0] = { &source, {} }; return 1; }, labels)
+ScopeComponent::ScopeComponent (const scope::CurveFeed& feed, bool labels)
+    : ScopeComponent ([&feed] (LayerList& list) { list[0] = { &feed, {} }; return 1; }, labels)
 {
 }
 
@@ -340,13 +574,6 @@ juce::Rectangle<int> ScopeComponent::panelBounds (Layout layout, int panel, int 
     return { (w - side) / 2, (h - side) / 2, side, side };
 }
 
-juce::Colour ScopeComponent::colourForFrequency (double hz)
-{
-    // 20 Hz = red ... 20 kHz = blue, log spaced.
-    const double u = juce::jlimit (0.0, 1.0, std::log (juce::jmax (hz, 1.0) / 20.0) / std::log (1000.0));
-    return juce::Colour::fromHSV (0.66f * (float) u, 0.8f, 1.0f, 1.0f);
-}
-
 //==============================================================================
 void ScopeComponent::timerCallback()
 {
@@ -369,7 +596,12 @@ void ScopeComponent::mouseDoubleClick (const juce::MouseEvent&)
 
 void ScopeComponent::paint (juce::Graphics& g)
 {
-    const auto layout = (Layout) juce::jlimit (0, 2, shownLayout.load());
+    if (shownLayout.load() < 0)
+        return;   // a plane turned in space: the labels have no fixed place
+
+    const auto layout = (Layout) juce::jlimit (0, 3, shownLayout.load());
+    if (layout == Layout::mono)
+        return;
     g.setFont (14.0f);
 
     if (layout == Layout::sideBySide)
@@ -428,12 +660,16 @@ void ScopeComponent::newOpenGLContextCreated()
     }
 
     lineShader = buildShader (context, lineVertexShader, lineFragmentShader);
+    fieldShader = buildShader (context, fieldVertexShader, fieldFragmentShader.toRawUTF8());
+    volumeShader = buildShader (context, volumeVertexShader, volumeFragmentShader.toRawUTF8());
     blurShader = buildShader (context, fullScreenVertexShader, blurFragmentShader);
     blendShader = buildShader (context, fullScreenVertexShader, blendFragmentShader);
     copyShader = buildShader (context, fullScreenVertexShader, copyFragmentShader);
-    if (lineShader == nullptr || blurShader == nullptr || blendShader == nullptr || copyShader == nullptr)
+    if (lineShader == nullptr || fieldShader == nullptr || blurShader == nullptr || blendShader == nullptr || copyShader == nullptr)
     {
         lineShader.reset();
+        fieldShader.reset();
+        volumeShader.reset();
         blurShader.reset();
         blendShader.reset();
         copyShader.reset();
@@ -441,6 +677,8 @@ void ScopeComponent::newOpenGLContextCreated()
     }
 
     linePosition = glGetAttribLocation (lineShader->getProgramID(), "position");
+    lineOther = glGetAttribLocation (lineShader->getProgramID(), "other");
+    lineDepth = glGetAttribLocation (lineShader->getProgramID(), "depth");
     lineColour = glGetAttribLocation (lineShader->getProgramID(), "colour");
 
     if (glGenVertexArrays != nullptr)   // optional on a GL 2.1 context
@@ -459,41 +697,43 @@ void ScopeComponent::openGLContextClosing()
     if (vao != 0) glDeleteVertexArrays (1, &vao);
     vbo = vao = 0;
     lineShader.reset();
+    fieldShader.reset();
+    volumeShader.reset();
     blurShader.reset();
     blendShader.reset();
     copyShader.reset();
 }
 
 //==============================================================================
-// The settings of a layer, or the defaults where there is none.
-ScopeComponent::Settings ScopeComponent::readSettings (const ScopeSource* src)
+// How a layer is to be shown, or the defaults where there is none.
+ScopeComponent::Look ScopeComponent::readLook (const ScopeParamSet* params)
 {
     using namespace scope;
-    auto get = [src] (int index) { return src != nullptr ? src->get (index) : paramTable[index].def; };
+    auto get = [params] (int index) { return params != nullptr ? params->get (index) : paramTable[index].def; };
 
-    // The axis of the Swing mode makes one swing per window length, or
-    // swings at its own rate.
-    const float swingHz = get (pSwingSync) > 0.5f ? 1000.0f / juce::jmax (1.0f, get (pWindow)) : get (pSwingRate);
-
-    return { (Mode) juce::jlimit (0, 2, (int) get (pMode)),
-             get (pColour) > 0.5f,
-             get (pGuides) > 0.5f,
-             (Layout) juce::jlimit (0, 2, (int) get (pLayout)),
-             juce::jlimit (0, 9, (int) get (pBlend)),
-             get (pSwingMotion) > 0.5f,
-             swingHz,
-             get (pWindow),
-             get (pDelay),
+    return { juce::jlimit (0, 9, (int) get (pBlend)),
              get (pAfterglow),
              get (pBrightness) * 0.01f,
              get (pContrast) * 0.01f,
              get (pBlur),
-             get (pLowCut),
-             get (pHighCut),
-             juce::jmax (1000.0, src != nullptr ? src->sampleRate.load() : 48000.0) };
+             get (pViewYaw),
+             get (pViewPitch),
+             get (pViewRoll),
+             { get (pCamX), get (pCamY), get (pCamZ) },
+             get (pFieldVolume) > 0.5f,
+             0.5f * std::pow (80.0f, get (pFieldDensity) * 0.01f),
+             get (pFieldFocus),
+             get (pFieldAperture) * 0.01f };
 }
 
-ScopeComponent::PanelPlacement ScopeComponent::placePanel (Layout layout, int panel, int w, int h, int margin, View view)
+scope::Camera ScopeComponent::cameraOf (const Look& look)
+{
+    return { look.viewYaw, look.viewPitch, look.viewRoll, look.cameraAt };
+}
+
+// flat: the plane lies in the panel, so nothing can fall outside its square.
+// A plane turned in space can reach past it, and may draw anywhere.
+ScopeComponent::PanelPlacement ScopeComponent::placePanel (Layout layout, int panel, int w, int h, int margin, View view, bool flat)
 {
     // Lay the panels out on the whole virtual canvas, then shift by where
     // this component's part of it starts. GL's y axis points up.
@@ -507,7 +747,7 @@ ScopeComponent::PanelPlacement ScopeComponent::placePanel (Layout layout, int pa
              (float) b.getHeight() / (float) h,
              2.0f * (float) b.getCentreX() / (float) w - 1.0f,
              2.0f * (float) b.getCentreY() / (float) h - 1.0f,
-             b.getIntersection ({ 0, 0, w, h }) };
+             flat ? b.getIntersection ({ 0, 0, w, h }) : juce::Rectangle<int> (0, 0, w, h) };
 }
 
 // Half the line thickness (~2.4 px in all), in panel coordinates. It follows
@@ -519,289 +759,38 @@ float ScopeComponent::lineHalfWidthFor (Layout layout, View view, int w, int h, 
     return 1.2f * scale / (float) side;
 }
 
-// Aims the line shader at a panel. False if none of it is on this screen.
-bool ScopeComponent::usePanel (const PanelPlacement& p)
+// Aims the line shader at a panel, for points in the scene (orient: the
+// camera) or on a plane (the plane as the camera sees it), with lines of
+// the given thickness. False if none of it is on this screen.
+bool ScopeComponent::usePanel (const PanelPlacement& p, const scope::Mat3& planeToView, float halfWidth, scope::Vec3 shift)
 {
     if (p.scissor.isEmpty())
         return false;
 
     glScissor (p.scissor.getX(), p.scissor.getY(), p.scissor.getWidth(), p.scissor.getHeight());
     setLineTransform (p.scaleX, p.scaleY, p.offsetX, p.offsetY);
+    lineShader->setUniformMat3 ("orient", planeToView.m, 1, GL_FALSE);
+    lineShader->setUniform ("shift", shift.x, shift.y, shift.z);
+    lineShader->setUniform ("halfWidth", halfWidth);
     return true;
 }
 
 //==============================================================================
-// The analysis thread of a layer.
-ScopeComponent::Range ScopeComponent::LayerRenderer::computeRange (const Settings& s) const
-{
-    Range r {};
-    r.end = blockSize - edgeMargin;
-    r.length = juce::jlimit (16, blockSize - 2 * edgeMargin, (int) (s.windowMs * 0.001 * s.sampleRate));
-    r.start = r.end - r.length;
-    r.delay = juce::jlimit (1, r.start, (int) (s.delayMs * 0.001 * s.sampleRate));
-    r.stride = juce::jmax (1, r.length / maxPointsPerChannel);
-    r.freqLag = juce::jmax (r.stride, 8);
-    return r;
-}
-
-// Low cut / high cut as per-bin gains, with a half-octave raised-cosine
-// slope at each edge so the band limits do not ring.
-void ScopeComponent::LayerRenderer::updateBandWeights (const Settings& s)
-{
-    if (juce::exactlyEqual (s.lowCutHz, weightsLowCut) && juce::exactlyEqual (s.highCutHz, weightsHighCut)
-        && juce::exactlyEqual (s.sampleRate, weightsSampleRate))
-        return;
-
-    weightsLowCut = s.lowCutHz;
-    weightsHighCut = s.highCutHz;
-    weightsSampleRate = s.sampleRate;
-
-    const bool lowActive = s.lowCutHz > 20.5f, highActive = s.highCutHz < 19999.5f;
-    bandLimited = lowActive || highActive;
-    if (! bandLimited)
-        return;
-
-    // 0 well below the cut, 1 well above it.
-    auto edge = [] (double hz, double cutHz)
-    {
-        const double t = juce::jlimit (0.0, 1.0, std::log2 (juce::jmax (hz, 1.0e-3) / cutHz) * 2.0 + 0.5);
-        return 0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * t);
-    };
-
-    bandWeights.resize ((size_t) blockSize / 2 + 1);
-    for (int k = 0; k <= blockSize / 2; ++k)
-    {
-        const double hz = (double) k * s.sampleRate / (double) blockSize;
-        double w = 1.0;
-        if (lowActive)  w *= edge (hz, (double) s.lowCutHz);
-        if (highActive) w *= 1.0 - edge (hz, (double) s.highCutHz);
-        bandWeights[(size_t) k] = (float) w;
-    }
-}
-
-void ScopeComponent::LayerRenderer::analyse (int channel)
-{
-    auto& samples = block[channel];
-    blockStart[channel] = source.rings[channel].readLatest (samples.data(), blockSize);
-
-    // Analytic signal: zero the negative frequencies, double the positive.
-    for (int i = 0; i < blockSize; ++i)
-        timeScratch[(size_t) i] = { samples[(size_t) i], 0.0f };
-    fft.perform (timeScratch.data(), freqScratch.data(), false);
-
-    if (bandLimited)
-        for (int k = 0; k <= blockSize / 2; ++k)
-            freqScratch[(size_t) k] *= bandWeights[(size_t) k];
-
-    for (int k = 1; k < blockSize / 2; ++k)
-        freqScratch[(size_t) k] *= 2.0f;
-    for (int k = blockSize / 2 + 1; k < blockSize; ++k)
-        freqScratch[(size_t) k] = 0.0f;
-    fft.perform (freqScratch.data(), analytic[channel].data(), true);
-
-    // Everything that reads the plain samples (delay embed, goniometer,
-    // correlation) should see the band-limited signal too.
-    if (bandLimited)
-        for (int i = 0; i < blockSize; ++i)
-            samples[(size_t) i] = analytic[channel][(size_t) i].real();
-}
-
-void ScopeComponent::LayerRenderer::updateCorrelation (const Range& r)
-{
-    double lr = 0.0, ll = 0.0, rr = 0.0;
-    for (int i = r.start; i < r.end; ++i)
-    {
-        const double l = block[0][(size_t) i], rt = block[1][(size_t) i];
-        lr += l * rt;
-        ll += l * l;
-        rr += rt * rt;
-    }
-
-    const double energy = std::sqrt (ll * rr);
-    const float target = energy > 1.0e-12 ? (float) (lr / energy) : 1.0f;
-    const float previous = correlation.load();
-    correlation.store (previous + (target - previous) * 0.2f);
-}
-
-// The analysis thread: one frame of work each time the GL thread asks.
-void ScopeComponent::LayerRenderer::runAnalysis()
-{
-    while (! thread.threadShouldExit())
-    {
-        if (! frameWanted.wait (100))
-            continue;   // not being drawn (hidden, minimised): stay idle
-
-        const auto s = readSettings (&source);
-        const auto range = computeRange (s);
-        const float halfWidth = lineHalfWidth.load();
-
-        updateBandWeights (s);
-        analyse (0);
-        analyse (1);
-        updateCorrelation (range);
-
-        working.layout = s.layout;
-        for (auto& panel : working.panels)
-            panel.clear();
-
-        switch (s.layout)
-        {
-            case Layout::sideBySide:
-                addTrajectory (working.panels[0], 0, s, range, std::nullopt, halfWidth);
-                addTrajectory (working.panels[1], 1, s, range, std::nullopt, halfWidth);
-                break;
-            case Layout::overlay:
-                addTrajectory (working.panels[0], 0, s, range, leftColour, halfWidth);
-                addTrajectory (working.panels[0], 1, s, range, rightColour, halfWidth);
-                break;
-            case Layout::midSide:
-                addGoniometer (working.panels[0], s, range, halfWidth);
-                break;
-        }
-
-        const juce::SpinLock::ScopedLockType lock (frameLock);
-        std::swap (working, pending);
-        pendingIsNew = true;
-    }
-}
-
-void ScopeComponent::LayerRenderer::addTrajectory (std::vector<Vertex>& out, int channel, const Settings& s, const Range& r,
-                                    std::optional<juce::Colour> colourOverride, float halfWidth)
-{
-    const auto& z = analytic[channel];
-    const auto& samples = block[channel];
-
-    // Auto-gain: snap down on loud input, ease back up when it gets quieter.
-    float peak = 0.0f;
-    for (int i = r.start; i < r.end; ++i)
-        peak = juce::jmax (peak, std::abs (z[(size_t) i]));
-    const float target = plotRadius / juce::jmax (peak, 0.01f);
-    gain[channel] = target < gain[channel] ? target : gain[channel] + (target - gain[channel]) * 0.05f;
-    const float g = gain[channel];
-
-    const juce::Colour fixed = colourOverride.value_or (channel == 0 ? leftColour : rightColour);
-    const bool useHue = ! s.fixedColour && ! colourOverride.has_value();
-
-    // Swing mode: the axis angle follows the samples' absolute position, so
-    // a point keeps its place on screen for as long as it is shown.
-    const double swingsPerSample = (double) s.swingHz / s.sampleRate;
-    auto swingAngle = [&] (int i)
-    {
-        const double swings = (double) (blockStart[channel] + (size_t) i) * swingsPerSample;
-        const double phase = juce::MathConstants<double>::twoPi * (swings - std::floor (swings));
-        return s.swingRound ? phase : juce::MathConstants<double>::pi * std::sin (phase);
-    };
-
-    Vertex prev {};
-    bool havePrev = false;
-    for (int i = r.start; i < r.end; i += r.stride)
-    {
-        const auto zi = z[(size_t) i];
-        float x = zi.real() * g;
-        float y = 0.0f;
-
-        switch (s.mode)
-        {
-            case Mode::quadrature: y = zi.imag() * g; break;
-            case Mode::delayEmbed: y = samples[(size_t) (i - r.delay)] * g; break;
-            case Mode::swing:
-            {
-                const double angle = swingAngle (i);
-                y = x * (float) std::sin (angle);
-                x *= (float) std::cos (angle);
-                break;
-            }
-        }
-
-        juce::Colour col = fixed;
-        if (useHue)
-        {
-            // Instantaneous frequency from the phase advance over freqLag samples.
-            const auto rot = zi * std::conj (z[(size_t) (i - r.freqLag)]);
-            col = colourForFrequency (std::abs (std::arg (rot)) * s.sampleRate
-                                      / (juce::MathConstants<double>::twoPi * r.freqLag));
-        }
-
-        const float age = (float) (i - r.start) / (float) r.length;
-        const Vertex v { x, y, col.getFloatRed(), col.getFloatGreen(), col.getFloatBlue(), 0.04f + 0.86f * age * age };
-        if (havePrev)
-            addSegment (out, prev, v, halfWidth);
-        prev = v;
-        havePrev = true;
-    }
-}
-
-void ScopeComponent::LayerRenderer::addGoniometer (std::vector<Vertex>& out, const Settings& s, const Range& r, float halfWidth)
-{
-    const auto& left = block[0];
-    const auto& right = block[1];
-    constexpr float k = 0.70710678f;
-
-    float peak = 0.0f;
-    for (int i = r.start; i < r.end; ++i)
-    {
-        const float l = left[(size_t) i], rt = right[(size_t) i];
-        peak = juce::jmax (peak, std::abs (l + rt) * k, std::abs (rt - l) * k);
-    }
-    const float target = plotRadius / juce::jmax (peak, 0.01f);
-    gain[2] = target < gain[2] ? target : gain[2] + (target - gain[2]) * 0.05f;
-    const float g = gain[2] * k;
-
-    Vertex prev {};
-    bool havePrev = false;
-    for (int i = r.start; i < r.end; i += r.stride)
-    {
-        const float l = left[(size_t) i], rt = right[(size_t) i];
-
-        juce::Colour col = goniometerColour;
-        if (! s.fixedColour)
-        {
-            // Hue from the mid signal's instantaneous frequency.
-            const auto zm = analytic[0][(size_t) i] + analytic[1][(size_t) i];
-            const auto zmPrev = analytic[0][(size_t) (i - r.freqLag)] + analytic[1][(size_t) (i - r.freqLag)];
-            col = colourForFrequency (std::abs (std::arg (zm * std::conj (zmPrev))) * s.sampleRate
-                                      / (juce::MathConstants<double>::twoPi * r.freqLag));
-        }
-
-        const float age = (float) (i - r.start) / (float) r.length;
-        const Vertex v { (rt - l) * g, (l + rt) * g, col.getFloatRed(), col.getFloatGreen(), col.getFloatBlue(),
-                         0.04f + 0.86f * age * age };
-        if (havePrev)
-            addSegment (out, prev, v, halfWidth);
-        prev = v;
-        havePrev = true;
-    }
-}
-
-//==============================================================================
-void ScopeComponent::addSegment (std::vector<Vertex>& out, Vertex a, Vertex b, float halfWidth)
-{
-    const float dx = b.x - a.x, dy = b.y - a.y;
-    const float len = std::sqrt (dx * dx + dy * dy);
-    if (len < 1.0e-6f)
-        return;
-
-    const float nx = -dy / len * halfWidth, ny = dx / len * halfWidth;
-    auto offset = [] (Vertex v, float ox, float oy) { v.x += ox; v.y += oy; return v; };
-
-    const Vertex a0 = offset (a, nx, ny), a1 = offset (a, -nx, -ny);
-    const Vertex b0 = offset (b, nx, ny), b1 = offset (b, -nx, -ny);
-    out.insert (out.end(), { a0, a1, b0, b0, a1, b1 });
-}
-
 void ScopeComponent::addFullScreenQuad (float r, float g, float b, float a)
 {
     auto v = [=] (float x, float y) { return Vertex { x, y, r, g, b, a }; };
     vertices.insert (vertices.end(), { v (-1, -1), v (1, -1), v (1, 1), v (-1, -1), v (1, 1), v (-1, 1) });
 }
 
-void ScopeComponent::addTrajectoryGuides (float halfWidth)
+// The guides are half as thick as the traces.
+void ScopeComponent::addTrajectoryGuides()
 {
-    const float c = 0.18f;
+    using scope::addSegment;
+    const float c = 0.18f, thin = 0.5f;
     auto v = [c] (float x, float y) { return Vertex { x, y, c, c, c * 1.1f, 1.0f }; };
 
-    addSegment (vertices, v (-1.0f, 0.0f), v (1.0f, 0.0f), halfWidth);
-    addSegment (vertices, v (0.0f, -1.0f), v (0.0f, 1.0f), halfWidth);
+    addSegment (vertices, v (-1.0f, 0.0f), v (1.0f, 0.0f), thin);
+    addSegment (vertices, v (0.0f, -1.0f), v (0.0f, 1.0f), thin);
 
     constexpr int steps = 128;
     for (int i = 0; i < steps; ++i)
@@ -809,25 +798,26 @@ void ScopeComponent::addTrajectoryGuides (float halfWidth)
         const float a0 = juce::MathConstants<float>::twoPi * (float) i / steps;
         const float a1 = juce::MathConstants<float>::twoPi * (float) (i + 1) / steps;
         addSegment (vertices, v (plotRadius * std::cos (a0), plotRadius * std::sin (a0)),
-                    v (plotRadius * std::cos (a1), plotRadius * std::sin (a1)), halfWidth);
+                    v (plotRadius * std::cos (a1), plotRadius * std::sin (a1)), thin);
     }
 }
 
-void ScopeComponent::addGoniometerGuides (float halfWidth, float shown)
+void ScopeComponent::addGoniometerGuides (float shown)
 {
-    const float c = 0.18f;
+    using scope::addSegment;
+    const float c = 0.18f, thin = 0.5f;
     auto v = [c] (float x, float y, float k = 1.0f) { return Vertex { x, y, c * k, c * k, c * 1.1f * k, 1.0f }; };
 
     const float d = plotRadius * 0.7071f;
-    addSegment (vertices, v (0.0f, -plotRadius), v (0.0f, plotRadius), halfWidth);           // mono (M)
-    addSegment (vertices, v (-plotRadius, 0.0f), v (plotRadius, 0.0f), halfWidth);           // anti-phase (S)
-    addSegment (vertices, v (-d, -d, 0.6f), v (d, d, 0.6f), halfWidth);                       // R only
-    addSegment (vertices, v (-d, d, 0.6f), v (d, -d, 0.6f), halfWidth);                       // L only
+    addSegment (vertices, v (0.0f, -plotRadius), v (0.0f, plotRadius), thin);           // mono (M)
+    addSegment (vertices, v (-plotRadius, 0.0f), v (plotRadius, 0.0f), thin);           // anti-phase (S)
+    addSegment (vertices, v (-d, -d, 0.6f), v (d, d, 0.6f), thin);                       // R only
+    addSegment (vertices, v (-d, d, 0.6f), v (d, -d, 0.6f), thin);                       // L only
 
     // Correlation bar: track, centre tick, and a marker coloured by sign.
     const float barHalf = 0.85f;
-    addSegment (vertices, v (-barHalf, barY), v (barHalf, barY), halfWidth);
-    addSegment (vertices, v (0.0f, barY - 0.02f), v (0.0f, barY + 0.02f), halfWidth);
+    addSegment (vertices, v (-barHalf, barY), v (barHalf, barY), thin);
+    addSegment (vertices, v (0.0f, barY - 0.02f), v (0.0f, barY + 0.02f), thin);
 
     const auto markerColour = shown > 0.3f ? juce::Colour (0xff97c459)
                             : shown >= 0.0f ? juce::Colour (0xffef9f27)
@@ -836,7 +826,7 @@ void ScopeComponent::addGoniometerGuides (float halfWidth, float shown)
     const Vertex top { mx, barY + 0.035f, markerColour.getFloatRed(), markerColour.getFloatGreen(), markerColour.getFloatBlue(), 1.0f };
     Vertex bottom = top;
     bottom.y = barY - 0.035f;
-    addSegment (vertices, bottom, top, halfWidth * 3.0f);
+    addSegment (vertices, bottom, top, thin * 3.0f);
 }
 
 //==============================================================================
@@ -857,11 +847,31 @@ void ScopeComponent::drawVertices (const std::vector<Vertex>& toDraw, GLint posi
                                reinterpret_cast<void*> (2 * sizeof (float)));
     }
 
+    // Only the line shader has colours, and with them the lines' corners.
+    const GLint otherAttrib = colourAttrib >= 0 ? lineOther : -1;
+    const GLint depthAttrib = colourAttrib >= 0 ? lineDepth : -1;
+    if (otherAttrib >= 0)
+    {
+        glEnableVertexAttribArray ((GLuint) otherAttrib);
+        glVertexAttribPointer ((GLuint) otherAttrib, 3, GL_FLOAT, GL_FALSE, sizeof (Vertex),
+                               reinterpret_cast<void*> (6 * sizeof (float)));
+    }
+    if (depthAttrib >= 0)
+    {
+        glEnableVertexAttribArray ((GLuint) depthAttrib);
+        glVertexAttribPointer ((GLuint) depthAttrib, 2, GL_FLOAT, GL_FALSE, sizeof (Vertex),
+                               reinterpret_cast<void*> (9 * sizeof (float)));
+    }
+
     glDrawArrays (GL_TRIANGLES, 0, (GLsizei) toDraw.size());
 
     glDisableVertexAttribArray ((GLuint) positionAttrib);
     if (colourAttrib >= 0)
         glDisableVertexAttribArray ((GLuint) colourAttrib);
+    if (otherAttrib >= 0)
+        glDisableVertexAttribArray ((GLuint) otherAttrib);
+    if (depthAttrib >= 0)
+        glDisableVertexAttribArray ((GLuint) depthAttrib);
 }
 
 void ScopeComponent::drawFullScreen (const juce::OpenGLShaderProgram& program)
@@ -875,6 +885,10 @@ void ScopeComponent::useLineShader (float alphaScale)
 {
     lineShader->use();
     lineShader->setUniform ("alphaScale", alphaScale);
+    lineShader->setUniform ("eye", scope::eyeDistance);
+    lineShader->setUniform ("halfWidth", 0.0f);
+    lineShader->setUniformMat3 ("orient", scope::Mat3().m, 1, GL_FALSE);
+    lineShader->setUniform ("shift", 0.0f, 0.0f, 0.0f);
     setLineTransform (1.0f, 1.0f, 0.0f, 0.0f);
 }
 
@@ -884,31 +898,24 @@ void ScopeComponent::setLineTransform (float scaleX, float scaleY, float offsetX
 }
 
 //==============================================================================
-void ScopeComponent::LayerRenderer::render (View view, int w, int h, float scale, double dtMs)
+void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& camera, int w, int h, float scale, double dtMs)
 {
-    // Take the newest analysed frame and ask for the next one, which the
-    // analysis thread works out while this one is drawn. If none is ready
-    // the previous frame is drawn again.
-    {
-        const juce::SpinLock::ScopedLockType lock (frameLock);
-        if (pendingIsNew)
-        {
-            std::swap (pending, front);
-            pendingIsNew = false;
-        }
-    }
-    frameWanted.signal();
+    // Take the newest frame, and say this feed is being watched so one that
+    // is made on demand gets its next. With no new one the last is drawn
+    // again; with none at all yet, only the afterglow is kept up.
+    if (auto newest = feed.getLatest())
+        frame = std::move (newest);
+    feed.request();
 
-    // The look follows the parameters at once; the layout has to be the one
-    // the frame's geometry was built for.
-    shown = readSettings (&source);
-    shown.layout = front.layout;
+    look = readLook (&feed.params);
+    const auto layout = frame != nullptr ? frame->layout : Layout::sideBySide;
+    const bool flat = (frame == nullptr || frame->flat) && camera.atRest();
 
     // The afterglow decays by the time since the last frame, so it does not
     // depend on the frame rate.
-    const float keep = shown.afterglowMs >= 1.0f ? (float) std::exp (-dtMs / (double) shown.afterglowMs) : 0.0f;
+    const float keep = look.afterglowMs >= 1.0f ? (float) std::exp (-dtMs / (double) look.afterglowMs) : 0.0f;
     const int margin = juce::roundToInt ((float) panelMargin * scale);
-    lineHalfWidth.store (lineHalfWidthFor (shown.layout, view, w, h, margin, scale));
+    const float halfWidth = lineHalfWidthFor (layout, view, w, h, margin, scale);
 
     accumTarget.ensure (w, h);
     currentTarget.ensure (w, h);
@@ -931,23 +938,59 @@ void ScopeComponent::LayerRenderer::render (View view, int w, int h, float scale
     //    steady state matches "off", and to the live beam at full strength
     //    so a shape that just moved is never dim.
     glBlendFunc (GL_SRC_ALPHA, GL_ONE);
-    glEnable (GL_SCISSOR_TEST);
-    for (int panel = 0; panel < numPanels (shown.layout); ++panel)
+    if (frame != nullptr && frame->numSources > 0)
     {
-        const auto placement = placePanel (shown.layout, panel, w, h, margin, view);
+        uploadField();
+        const auto placement = placePanel (layout, 0, w, h, margin, view, false);
+
+        if (look.fieldVolume && owner.volumeShader != nullptr)
+        {
+            // The volume once, at half size, then that onto both buffers.
+            volumeTarget.ensure (w / 2, h / 2);
+            volumeTarget.bind();
+            glDisable (GL_BLEND);
+            drawVolume (placement, camera);
+            glEnable (GL_BLEND);
+
+            glBlendFunc (GL_CONSTANT_ALPHA, GL_ONE);
+            owner.copyShader->use();
+            owner.copyShader->setUniform ("image", (GLint) 0);
+            for (auto* target : { &accumTarget, &currentTarget })
+            {
+                target->bind();
+                glBlendColor (0.0f, 0.0f, 0.0f, target == &accumTarget ? 1.0f - keep : 1.0f);
+                bindTexture (0, volumeTarget.texture);
+                owner.drawFullScreen (*owner.copyShader);
+            }
+            bindTexture (0, 0);
+            glBlendFunc (GL_SRC_ALPHA, GL_ONE);
+        }
+        else
+        {
+            accumTarget.bind();
+            drawField (placement, camera, 1.0f - keep);
+            currentTarget.bind();
+            drawField (placement, camera, 1.0f);
+        }
+    }
+
+    glEnable (GL_SCISSOR_TEST);
+    for (int panel = 0; frame != nullptr && frame->numSources == 0 && panel < numPanels (layout); ++panel)
+    {
+        const auto placement = placePanel (layout, panel, w, h, margin, view, flat);
 
         for (auto* target : { &accumTarget, &currentTarget })
         {
             target->bind();
             owner.useLineShader (target == &accumTarget ? 1.0f - keep : 1.0f);
-            if (owner.usePanel (placement))
-                owner.drawVertices (front.panels[panel], owner.linePosition, owner.lineColour);
+            if (owner.usePanel (placement, camera.turn, halfWidth, camera.shift))
+                owner.drawVertices (frame->panels[panel].triangles, owner.linePosition, owner.lineColour);
         }
     }
     glDisable (GL_SCISSOR_TEST);
 
     // 3. Gaussian blur of (afterglow + beam) at half resolution, two passes.
-    blurRadius = juce::jlimit (0, maxBlurRadius, juce::roundToInt (shown.blurPx * scale * 0.5f));
+    blurRadius = juce::jlimit (0, maxBlurRadius, juce::roundToInt (look.blurPx * scale * 0.5f));
     if (blurRadius > 0)
     {
         auto& shader = *owner.blurShader;
@@ -973,6 +1016,153 @@ void ScopeComponent::LayerRenderer::render (View view, int w, int h, float scale
         owner.drawFullScreen (shader);
         glEnable (GL_BLEND);
     }
+}
+
+// Puts the mirrored sound of the frame's sources in the texture, one row each.
+void ScopeComponent::LayerRenderer::uploadField()
+{
+    constexpr int across = scope::fieldSamples, rows = scope::maxFieldSources * scope::fieldBands;
+
+    if (fieldTexture == 0)
+    {
+        glGenTextures (1, &fieldTexture);
+        glBindTexture (GL_TEXTURE_2D, fieldTexture);
+        glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA16F, across, rows, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        fieldUploaded = nullptr;
+    }
+
+    if (fieldUploaded == frame.get())
+        return;
+    fieldUploaded = frame.get();
+
+    fieldPixels.assign ((size_t) (across * rows), 0.0f);
+    for (int k = 0; k < juce::jmin (frame->numSources, scope::maxFieldSources); ++k)
+    {
+        // A source's rows: its whole sound in the first, or its bands in all of them.
+        const auto& samples = frame->sources[k].samples;
+        std::copy_n (samples.begin(), juce::jmin (samples.size(), (size_t) (across * scope::fieldBands)),
+                     fieldPixels.begin() + k * across * scope::fieldBands);
+    }
+
+    glBindTexture (GL_TEXTURE_2D, fieldTexture);
+    glPixelStorei (GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D (GL_TEXTURE_2D, 0, 0, 0, across, rows, GL_RED, GL_FLOAT, fieldPixels.data());
+    glBindTexture (GL_TEXTURE_2D, 0);
+}
+
+// Tells a field shader about the frame's sources, and gives it their sound.
+void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shader)
+{
+    const int count = juce::jmin (frame->numSources, scope::maxFieldSources);
+    float at[scope::maxFieldSources * 3] {}, colour[scope::maxFieldSources * 3] {}, fade[scope::maxFieldSources] {};
+    float axes[scope::maxFieldSources * 9] {};
+
+    for (int k = 0; k < count; ++k)
+    {
+        const auto& s = frame->sources[k];
+        at[k * 3] = s.at.x;     at[k * 3 + 1] = s.at.y;     at[k * 3 + 2] = s.at.z;
+        colour[k * 3] = s.r;    colour[k * 3 + 1] = s.g;    colour[k * 3 + 2] = s.b;
+        fade[k] = s.fade;
+
+        // The plane turned back: its transpose.
+        for (int col = 0; col < 3; ++col)
+            for (int row = 0; row < 3; ++row)
+                axes[k * 9 + col * 3 + row] = s.plane.m[row * 3 + col];
+    }
+
+    shader.use();
+    const auto program = shader.getProgramID();
+    glUniform3fv (glGetUniformLocation (program, "sourceAt"), scope::maxFieldSources, at);
+    glUniform3fv (glGetUniformLocation (program, "sourceColour"), scope::maxFieldSources, colour);
+    glUniform1fv (glGetUniformLocation (program, "sourceFade"), scope::maxFieldSources, fade);
+    glUniformMatrix3fv (glGetUniformLocation (program, "sourceAxes"), scope::maxFieldSources, GL_FALSE, axes);
+    shader.setUniform ("count", (GLint) count);
+    shader.setUniform ("reach", juce::jmax (1.0e-3f, frame->reach));
+    shader.setUniform ("rings", frame->rings ? 1.0f : 0.0f);
+    shader.setUniform ("eq", frame->eq ? 1.0f : 0.0f);
+    shader.setUniform ("eqWidth", frame->eqWidth / scope::fieldBandOctaves);
+    glUniform1fv (glGetUniformLocation (program, "curve"), scope::fieldCurvePoints, frame->curve);
+    shader.setUniform ("eye", scope::eyeDistance);
+    shader.setUniform ("waves", (GLint) 0);
+    bindTexture (0, fieldTexture);
+}
+
+// The field of the frame, on each of the planes its sources lie on,
+// into the bound target.
+void ScopeComponent::LayerRenderer::drawField (const PanelPlacement& p, const scope::Camera& camera, float alphaScale)
+{
+    auto& shader = *owner.fieldShader;
+    useSources (shader);
+    shader.setUniform ("alphaScale", alphaScale);
+    shader.setUniform ("transform", p.scaleX, p.scaleY, p.offsetX, p.offsetY);
+    shader.setUniformMat3 ("camera", camera.turn.m, 1, GL_FALSE);
+    shader.setUniform ("cameraShift", camera.shift.x, camera.shift.y, camera.shift.z);
+
+    owner.vertices.clear();
+    auto v = [] (float x, float y) { return Vertex { x * fieldSheet, y * fieldSheet, 0.0f, 0.0f, 0.0f, 0.0f }; };
+    owner.vertices.insert (owner.vertices.end(), { v (-1, -1), v (1, -1), v (1, 1), v (-1, -1), v (1, 1), v (-1, 1) });
+    const auto position = glGetAttribLocation (shader.getProgramID(), "position");
+
+    // Each plane once, however many sources lie on it.
+    const int count = juce::jmin (frame->numSources, scope::maxFieldSources);
+    for (int k = 0; k < count; ++k)
+    {
+        const auto& s = frame->sources[k];
+        bool drawn = false;
+        for (int j = 0; j < k; ++j)
+            drawn = drawn || (frame->sources[j].plane.isNear (s.plane) && frame->sources[j].at.isNear (s.at));
+        if (drawn)
+            continue;
+
+        shader.setUniformMat3 ("plane", s.plane.m, 1, GL_FALSE);
+        shader.setUniform ("origin", s.at.x, s.at.y, s.at.z);
+        owner.drawVertices (owner.vertices, position, -1);
+    }
+    bindTexture (0, 0);
+}
+
+// The field of the frame as a volume, over the whole of the bound target.
+void ScopeComponent::LayerRenderer::drawVolume (const PanelPlacement& p, const scope::Camera& camera)
+{
+    auto& shader = *owner.volumeShader;
+    useSources (shader);
+
+    // A ball about the centre of the scene that holds every source's field,
+    // as far as its fade lets it reach; it has to stay in front of the eye.
+    // With no fade, or one that reaches past the eye (the camera may have
+    // moved into it), the field is endless.
+    float bound = 0.5f;
+    bool endless = false;
+    for (int k = 0; k < juce::jmin (frame->numSources, scope::maxFieldSources); ++k)
+    {
+        const auto& s = frame->sources[k];
+        endless = endless || s.fade <= 0.01f;
+        bound = juce::jmax (bound, std::sqrt (s.at.x * s.at.x + s.at.y * s.at.y + s.at.z * s.at.z) + 1.0f / juce::jmax (0.01f, s.fade));
+    }
+
+    // The camera turned back: its transpose.
+    scope::Mat3 back;
+    for (int col = 0; col < 3; ++col)
+        for (int row = 0; row < 3; ++row)
+            back.m[col * 3 + row] = camera.turn.m[row * 3 + col];
+
+    const auto eyeAt = back * scope::Vec3 { -camera.shift.x, -camera.shift.y, scope::eyeDistance - camera.shift.z };
+    const float eyeOut = std::sqrt (eyeAt.x * eyeAt.x + eyeAt.y * eyeAt.y + eyeAt.z * eyeAt.z);
+    endless = endless || bound > eyeOut - 0.5f;
+    shader.setUniform ("bound", juce::jmax (0.01f, juce::jmin (bound, eyeOut - 0.5f)));
+    shader.setUniform ("eyeAt", eyeAt.x, eyeAt.y, eyeAt.z);
+    shader.setUniform ("endless", endless ? 1.0f : 0.0f);
+    shader.setUniform ("density", look.fieldDensity);
+    shader.setUniform ("lens", look.fieldAperture * 0.5f);
+    shader.setUniform ("focus", juce::jmax (0.5f, scope::eyeDistance - look.fieldFocus));
+    shader.setUniform ("transform", p.scaleX, p.scaleY, p.offsetX, p.offsetY);
+    shader.setUniformMat3 ("cameraBack", back.m, 1, GL_FALSE);
+    owner.drawFullScreen (shader);
+    bindTexture (0, 0);
 }
 
 void ScopeComponent::renderOpenGL()
@@ -1001,7 +1191,7 @@ void ScopeComponent::renderOpenGL()
     }
 
     // Each layer keeps its renderer for as long as it is asked for, so its
-    // afterglow and auto-gain carry on from frame to frame.
+    // afterglow carries on from frame to frame.
     for (auto& layer : layers)
         layer->seen = false;
 
@@ -1009,10 +1199,10 @@ void ScopeComponent::renderOpenGL()
     for (int i = 0; i < count; ++i)
     {
         auto found = std::find_if (layers.begin(), layers.end(),
-                                   [&] (const auto& layer) { return &layer->source == list[(size_t) i].source && ! layer->seen; });
+                                   [&] (const auto& layer) { return &layer->feed == list[(size_t) i].feed && ! layer->seen; });
         if (found == layers.end())
         {
-            layers.push_back (std::make_unique<LayerRenderer> (*this, *list[(size_t) i].source));
+            layers.push_back (std::make_unique<LayerRenderer> (*this, *list[(size_t) i].feed));
             found = layers.end() - 1;
         }
         (*found)->seen = true;
@@ -1028,19 +1218,47 @@ void ScopeComponent::renderOpenGL()
         glBindVertexArray (vao);
     glEnable (GL_BLEND);
 
-    for (int i = 0; i < count; ++i)
-        drawn[i]->render (list[(size_t) i].view, w, h, scale, dt);
+    // One camera for the whole scene, so turning it turns the drawing as a
+    // whole: that of the lowest layer that has turned its view, so it can be
+    // done from any one instance without knowing which is at the bottom.
+    // Moving it counts as turning it.
+    scope::Camera camera;
+    for (int i = 0; i < count && camera.atRest(); ++i)
+        camera = cameraOf (readLook (&list[(size_t) i].feed->params));
 
-    // The canvas starts as the background with the guides, which belong to
-    // the bottom layer and are not affected by any image control.
-    auto base = readSettings (nullptr);
-    View baseView;
-    if (count > 0)
+    for (int i = 0; i < count; ++i)
+        drawn[i]->render (list[(size_t) i].view, camera, w, h, scale, dt);
+
+    // The canvas starts as the background with the guides, which are not
+    // affected by any image control. A frame says which of its planes want
+    // guides; every plane gets them once, from the lowest layer on it. With
+    // nothing to draw yet, the default picture's.
+    struct Guides { Layout layout; View view; scope::Mat3 planeToView; float correlation; scope::Vec3 shift; };
+    Guides guides[maxLayers * scope::maxGuidePlanes];
+    int numGuides = 0;
+    bool anyFrame = false;
+    for (int i = 0; i < count; ++i)
     {
-        base = drawn[0]->shown;
-        baseView = list[0].view;
+        const auto* frame = drawn[i]->frame.get();
+        if (frame == nullptr)
+            continue;
+        anyFrame = true;
+
+        for (int k = 0; k < frame->numGuides; ++k)
+        {
+            const auto planeToView = camera.turn * frame->guides[k];
+            const auto shift = camera.toView (frame->guidesAt[k]);
+            if (std::none_of (guides, guides + numGuides, [&] (const Guides& g) { return g.planeToView.isNear (planeToView) && g.shift.isNear (shift); }))
+                guides[numGuides++] = { frame->layout, list[(size_t) i].view, planeToView, frame->correlation, shift };
+        }
     }
-    drawnLayout.store ((int) base.layout);
+    if (! anyFrame)
+        guides[numGuides++] = { Layout::sideBySide, View(), camera.turn, 1.0f, camera.shift };
+
+    // The labels only fit a single flat picture.
+    const auto* bottom = count > 0 ? drawn[0]->frame.get() : nullptr;
+    drawnLayout.store (camera.atRest() && (bottom == nullptr || bottom->flat)
+                           ? (int) (bottom != nullptr ? bottom->layout : Layout::sideBySide) : -1);
 
     canvas[0].ensure (w, h);
     canvas[1].ensure (w, h);
@@ -1048,28 +1266,30 @@ void ScopeComponent::renderOpenGL()
     glClearColor (backgroundColour.getFloatRed(), backgroundColour.getFloatGreen(), backgroundColour.getFloatBlue(), 1.0f);
     glClear (GL_COLOR_BUFFER_BIT);
 
-    if (base.guides)
+    glBlendFunc (GL_SRC_ALPHA, GL_ONE);
+    useLineShader (1.0f);
+    glEnable (GL_SCISSOR_TEST);
+    for (int i = 0; i < numGuides; ++i)
     {
+        const auto& g = guides[i];
         const int margin = juce::roundToInt ((float) panelMargin * scale);
-        const float halfWidth = 0.5f * lineHalfWidthFor (base.layout, baseView, w, h, margin, scale);
+        const float halfWidth = lineHalfWidthFor (g.layout, g.view, w, h, margin, scale);
+        const bool flat = g.planeToView.isIdentity() && g.shift.isZero();
 
-        glBlendFunc (GL_SRC_ALPHA, GL_ONE);
-        useLineShader (1.0f);
-        glEnable (GL_SCISSOR_TEST);
-        for (int panel = 0; panel < numPanels (base.layout); ++panel)
+        for (int panel = 0; panel < numPanels (g.layout); ++panel)
         {
-            if (! usePanel (placePanel (base.layout, panel, w, h, margin, baseView)))
+            if (! usePanel (placePanel (g.layout, panel, w, h, margin, g.view, flat), g.planeToView, halfWidth, g.shift))
                 continue;
 
             vertices.clear();
-            if (base.layout == Layout::midSide)
-                addGoniometerGuides (halfWidth, count > 0 ? drawn[0]->correlation.load() : 1.0f);
+            if (g.layout == Layout::midSide)
+                addGoniometerGuides (g.correlation);
             else
-                addTrajectoryGuides (halfWidth);
+                addTrajectoryGuides();
             drawVertices (vertices, linePosition, lineColour);
         }
-        glDisable (GL_SCISSOR_TEST);
     }
+    glDisable (GL_SCISSOR_TEST);
 
     // Each layer in turn is combined with the canvas so far into the other
     // canvas buffer: a blend mode has to read what is under it.
@@ -1089,10 +1309,10 @@ void ScopeComponent::renderOpenGL()
         bindTexture (1, layer.accumTarget.texture);
         bindTexture (2, layer.currentTarget.texture);
         bindTexture (3, layer.blurTarget.texture);
-        blendShader->setUniform ("exposure", baseExposure * layer.shown.brightness);
-        blendShader->setUniform ("contrast", layer.shown.contrast);
+        blendShader->setUniform ("exposure", baseExposure * layer.look.brightness);
+        blendShader->setUniform ("contrast", layer.look.contrast);
         blendShader->setUniform ("haloGain", layer.blurRadius > 0 ? haloGain : 0.0f);
-        blendShader->setUniform ("mode", (GLint) layer.shown.blend);
+        blendShader->setUniform ("mode", (GLint) layer.look.blend);
         drawFullScreen (*blendShader);
         top = 1 - top;
     }

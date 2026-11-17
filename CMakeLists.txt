@@ -18,7 +18,7 @@ set(CIRCLESCOPE_DEFINITIONS
     JUCE_USE_CURL=0)
 
 # macOS asks the user before an app may talk to the local network.
-set(CIRCLESCOPE_PLIST "<plist version=\"1.0\"><dict><key>NSLocalNetworkUsageDescription</key><string>CircleScope sends audio and settings to its display nodes on the local network.</string></dict></plist>")
+set(CIRCLESCOPE_PLIST "<plist version=\"1.0\"><dict><key>NSLocalNetworkUsageDescription</key><string>CircleScope sends its drawing and settings to its display nodes on the local network.</string></dict></plist>")
 
 #===============================================================================
 # Cluster node: clean full-screen scope fed over the network.
@@ -30,7 +30,8 @@ juce_add_gui_app(CircleScopeNode
 
 target_sources(CircleScopeNode PRIVATE
     Source/Node/NodeMain.cpp
-    Source/ScopeComponent.cpp)
+    Source/ScopeComponent.cpp
+    Source/CurveAnalyser.cpp)
 
 target_compile_definitions(CircleScopeNode PRIVATE ${CIRCLESCOPE_DEFINITIONS})
 
@@ -59,7 +60,8 @@ juce_add_gui_app(CircleScopeWall
 
 target_sources(CircleScopeWall PRIVATE
     Source/Wall/WallMain.cpp
-    Source/ScopeComponent.cpp)
+    Source/ScopeComponent.cpp
+    Source/CurveAnalyser.cpp)
 
 target_compile_definitions(CircleScopeWall PRIVATE ${CIRCLESCOPE_DEFINITIONS})
 
@@ -120,7 +122,8 @@ juce_add_plugin(CircleScope
 target_sources(CircleScope PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
-    Source/ScopeComponent.cpp)
+    Source/ScopeComponent.cpp
+    Source/CurveAnalyser.cpp)
 
 target_compile_definitions(CircleScope PUBLIC
     ${CIRCLESCOPE_DEFINITIONS}

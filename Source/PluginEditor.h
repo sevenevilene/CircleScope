@@ -3,9 +3,11 @@
 #include "PluginProcessor.h"
 #include "ScopeComponent.h"
 #include "ControlPanel.h"
+#include "CameraPad.h"
 #include "FullScreenWindow.h"
 
-class CircleScopeEditor : public juce::AudioProcessorEditor
+class CircleScopeEditor : public juce::AudioProcessorEditor,
+                          private juce::Timer
 {
 public:
     explicit CircleScopeEditor (CircleScopeProcessor&);
@@ -16,9 +18,11 @@ public:
 
 private:
     void toggleFullScreen();
+    void timerCallback() override;
 
     CircleScopeProcessor& scopeProcessor;
     ScopeComponent scope;
+    CameraPad cameraPad;                            // in the scope's lower left corner
     juce::TextButton fullScreenButton { "Full screen" };
     ControlPanel controls;
     std::unique_ptr<FullScreenWindow> fullScreen;   // declared last: destroyed first

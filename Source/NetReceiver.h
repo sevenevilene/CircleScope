@@ -3,13 +3,15 @@
 #include <juce_core/juce_core.h>
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include "NetProtocol.h"
-#include "ScopeSource.h"
+#include "CurveAnalyser.h"
 
 // Receiving side of the network link, shared by the cluster node and the
 // wall. Every plugin instance heard on the network gets a slot of its own,
-// holding its samples and its parameter values: one layer. A stream is drawn
-// from all the layers whose instance is on that stream.
+// holding the newest frame of its drawing and its parameter values: one
+// layer. A stream is drawn from all the layers whose instance is on that
+// stream. Nothing is analysed here: the frames arrive finished.
 //
 // Slots all exist for the whole run and are only ever handed from one
 // instance to the next, so the pointers given out stay valid.
@@ -21,7 +23,7 @@ public:
 
     struct Layer
     {
-        const ScopeSource* source = nullptr;
+        const scope::CurveFeed* feed = nullptr;
         juce::uint32 streamMask = 0;             // every stream the instance is on
     };
     using LayerList = std::array<Layer, maxLayersPerStream>;
@@ -63,7 +65,7 @@ public:
 
         if (testTone.load())
         {
-            list[0] = { &testSlot.source, allStreams };
+            list[0] = { &test.feed, allStreams };
             return 1;
         }
 
@@ -72,12 +74,12 @@ public:
         int count = 0;
         for (const auto& slot : slots)
             if ((slot.streamMask.load() & (1u << (stream - 1))) != 0)
-                found[count++] = { &slot, slot.source.get (scope::pLayer) * 65536.0f + (float) slot.senderId.load() };
+                found[count++] = { &slot, slot.params.get (scope::pLayer) * 65536.0f + (float) slot.senderId.load() };
 
         std::sort (found, found + count, [] (const Found& a, const Found& b) { return a.order < b.order; });
         count = juce::jmin (count, maxLayersPerStream);
         for (int i = 0; i < count; ++i)
-            list[(size_t) i] = { &found[i].slot->source, found[i].slot->streamMask.load() };
+            list[(size_t) i] = { &found[i].slot->feed, found[i].slot->streamMask.load() };
         return count;
     }
 
@@ -87,16 +89,17 @@ public:
         return getLayers (stream, list);
     }
 
-    // Milliseconds since the last audio packet of a stream, or -1 if none yet.
+    // Milliseconds since the last packet of a stream, or -1 if none yet.
     int getPacketAgeMs (int stream) const
     {
         const auto last = lastPacketMs[stream].load();
         return last == 0 ? -1 : (int) (juce::Time::getMillisecondCounter() - last);
     }
 
+    // Frames of a stream that never arrived whole.
     int getLostPackets (int stream) const { return lostPackets[stream].load(); }
 
-    std::atomic<bool> testTone { false };   // replaces all network audio with the test signal
+    std::atomic<bool> testTone { false };   // replaces everything from the network with the test signal
 
 private:
     static constexpr juce::uint32 allStreams = (1u << net::maxStreams) - 1;
@@ -104,7 +107,8 @@ private:
 
     struct Slot
     {
-        ScopeSource source;
+        ScopeParamSet params;
+        scope::CurveFeed feed { params };
         std::atomic<juce::uint32> streamMask { 0 };   // 0: not drawn (free, or its instance went quiet)
         std::atomic<int> senderId { 0 };
 
@@ -112,7 +116,24 @@ private:
         juce::String address;
         bool used = false;
         juce::uint32 lastHeardMs = 0;
-        juce::uint64 nextPosition = 0;
+
+        // The frame being put together from its chunks.
+        scope::FramePool pool;
+        std::shared_ptr<scope::Frame> building;
+        juce::uint16 frameNumber = 0;
+        std::bitset<256> chunksHere;                  // one bit per chunk that has arrived
+        int numChunksHere = 0;
+        bool frameSeen = false;                       // frameNumber means something
+    };
+
+    // The local test tone, drawn like the plugin would draw it: this is the
+    // one thing a receiver analyses itself.
+    struct Test
+    {
+        ScopeSource source;
+        scope::CurveFeed feed { source };
+        CurveAnalyser analyser { source, feed };
+        TestTone tone;
     };
 
     void run() override
@@ -126,14 +147,14 @@ private:
             if (socket.waitUntilReady (true, 5) > 0)
             {
                 // Drain what has arrived, but come up for air under a flood.
-                for (int i = 0; i < 256 && socket.waitUntilReady (true, 0) > 0; ++i)
+                for (int i = 0; i < 512 && socket.waitUntilReady (true, 0) > 0; ++i)
                 {
                     juce::String address;
                     int port = 0;
                     const int n = socket.read (packet.data(), (int) packet.size(), false, address, port);
                     if (n <= 0)
                         break;
-                    handlePacket (address, packet.data(), n, left, right);
+                    handlePacket (address, packet.data(), n);
                 }
             }
 
@@ -159,10 +180,10 @@ private:
             while (due > 0)
             {
                 const int n = juce::jmin (512, due);
-                tone.render (left, right, n, rate);
-                testSlot.source.sampleRate.store (rate);
-                testSlot.source.rings[0].push (left, n);
-                testSlot.source.rings[1].push (right, n);
+                test.tone.render (left, right, n, rate);
+                test.source.sampleRate.store (rate);
+                test.source.rings[0].push (left, n);
+                test.source.rings[1].push (right, n);
                 due -= n;
             }
         }
@@ -188,14 +209,16 @@ private:
             spare->address = address;
             spare->senderId.store (senderId);
             spare->lastHeardMs = nowMs;
-            spare->nextPosition = 0;
+            spare->building = nullptr;
+            spare->frameSeen = false;
+            spare->feed.publish (nullptr);
             for (int i = 0; i < scope::numParams; ++i)
-                spare->source.local[i].store (scope::paramTable[i].def);
+                spare->params.local[i].store (scope::paramTable[i].def);
         }
         return spare;
     }
 
-    void handlePacket (const juce::String& address, const char* data, int size, float* left, float* right)
+    void handlePacket (const juce::String& address, const char* data, int size)
     {
         juce::uint32 magic = 0;
         if (size < (int) sizeof (net::ParamHeader))
@@ -218,67 +241,190 @@ private:
                     float value = 0.0f;
                     std::memcpy (&value, data + sizeof (header) + (size_t) i * sizeof (float), sizeof (float));
                     if (std::isfinite (value))
-                        slot->source.local[i].store (juce::jlimit (scope::paramTable[i].min, scope::paramTable[i].max, value));
+                        slot->params.local[i].store (juce::jlimit (scope::paramTable[i].min, scope::paramTable[i].max, value));
                 }
             }
             return;
         }
 
-        if (magic != net::audioMagic || size < (int) sizeof (net::AudioHeader))
+        if (magic != net::frameMagic || size < (int) sizeof (net::FrameHeader))
             return;
 
-        net::AudioHeader header;
+        net::FrameHeader header;
         std::memcpy (&header, data, sizeof (header));
-        const int frames = header.frames;
         const juce::uint32 mask = header.streamMask & allStreams;
-        if (frames < 1 || frames > net::maxFramesPerPacket
-            || size < (int) sizeof (header) + frames * 2 * (int) sizeof (float))
+        if (header.chunks < 1 || header.chunks > net::maxChunks || header.chunk >= header.chunks
+            || header.panel >= (header.kind == 2 ? scope::maxFieldSources : 2))
             return;
 
         auto* slot = slotFor (address, header.sender, nowMs);
         if (slot == nullptr)
             return;
-
-        // Count gaps; drop packets that arrive late or twice. A big jump back
-        // means the sender restarted, so follow it.
-        bool gap = false;
-        if (slot->nextPosition != 0 && header.samplePosition != slot->nextPosition)
-        {
-            if (header.samplePosition < slot->nextPosition && slot->nextPosition - header.samplePosition < 96000)
-                return;
-            gap = true;
-        }
-        slot->nextPosition = header.samplePosition + (juce::uint64) frames;
         slot->lastHeardMs = nowMs;
 
-        for (int stream = 1; stream <= net::maxStreams; ++stream)
+        auto forEachStream = [mask] (auto&& fn)
         {
-            if ((mask & (1u << (stream - 1))) != 0)
+            for (int stream = 1; stream <= net::maxStreams; ++stream)
+                if ((mask & (1u << (stream - 1))) != 0)
+                    fn (stream);
+        };
+        forEachStream ([&] (int stream) { lastPacketMs[stream].store (nowMs); });
+
+        // A chunk of a frame we are not on: start that frame, unless it is
+        // an older one straggling in. What was unfinished is lost.
+        if (! slot->frameSeen || header.frame != slot->frameNumber)
+        {
+            if (slot->frameSeen && (juce::int16) (header.frame - slot->frameNumber) < 0)
+                return;
+            if (slot->building != nullptr)
+                forEachStream ([&] (int stream) { ++lostPackets[stream]; });
+
+            slot->building = slot->pool.acquire();
+            slot->frameNumber = header.frame;
+            slot->frameSeen = true;
+            slot->chunksHere.reset();
+            slot->numChunksHere = 0;
+        }
+
+        if (slot->building == nullptr)
+            return;   // this frame is finished already
+        auto& frame = *slot->building;
+        const char* payload = data + sizeof (header);
+        const int payloadSize = size - (int) sizeof (header);
+
+        if (header.kind == 0)
+        {
+            net::FrameHead head;
+            if (payloadSize < (int) sizeof (head))
+                return;
+            std::memcpy (&head, payload, sizeof (head));
+            const int numGuides = juce::jmin ((int) head.numGuides, scope::maxGuidePlanes);
+            const int numSources = juce::jmin ((int) head.numSources, scope::maxFieldSources);
+            const bool eq = numSources > 0 && (head.flat & 4) != 0;
+            const int eqBytes = eq ? (int) (sizeof (float) + sizeof (frame.curve)) : 0;
+            if (head.numGuides > scope::maxGuidePlanes || head.numSources > scope::maxFieldSources
+                || payloadSize < (int) sizeof (head) + numGuides * (int) sizeof (net::WirePlane)
+                                     + numSources * (int) sizeof (net::WireSource) + (numSources > 0 ? (int) sizeof (float) : 0) + eqBytes)
+                return;
+
+            auto finite = [] (float v, float low, float high) { return std::isfinite (v) ? juce::jlimit (low, high, v) : 0.0f; };
+            auto readPlane = [&finite] (const net::WirePlane& wire, scope::Mat3& plane, scope::Vec3& at)
             {
-                lastPacketMs[stream].store (nowMs);
-                if (gap)
-                    ++lostPackets[stream];
+                for (int i = 0; i < 9; ++i)
+                    plane.m[i] = finite (wire.plane[i], -1.0f, 1.0f);
+                at = { finite (wire.at[0], -4.0f, 4.0f), finite (wire.at[1], -4.0f, 4.0f), finite (wire.at[2], -4.0f, 4.0f) };
+            };
+            const char* in = payload + sizeof (head);
+
+            frame.layout = (scope::Layout) juce::jlimit (0, 3, (int) head.layout);
+            frame.flat = (head.flat & 1) != 0;
+            frame.rings = (head.flat & 2) != 0;
+            frame.correlation = std::isfinite (head.correlation) ? juce::jlimit (-1.0f, 1.0f, head.correlation) : 1.0f;
+            frame.numGuides = numGuides;
+            for (int k = 0; k < numGuides; ++k, in += sizeof (net::WirePlane))
+            {
+                net::WirePlane wire;
+                std::memcpy (&wire, in, sizeof (wire));
+                readPlane (wire, frame.guides[k], frame.guidesAt[k]);
+            }
+
+            frame.numSources = numSources;
+            for (int k = 0; k < numSources; ++k, in += sizeof (net::WireSource))
+            {
+                net::WireSource wire;
+                std::memcpy (&wire, in, sizeof (wire));
+                auto& s = frame.sources[k];
+                readPlane (wire.where, s.plane, s.at);
+                s.r = finite (wire.colour[0], 0.0f, 1.0f);
+                s.g = finite (wire.colour[1], 0.0f, 1.0f);
+                s.b = finite (wire.colour[2], 0.0f, 1.0f);
+                s.fade = finite (wire.fade, 0.0f, 10.0f);
+                s.samples.resize ((size_t) (scope::fieldSamples * (eq ? scope::fieldBands : 1)));   // keeps what has arrived already
+            }
+            if (numSources > 0)
+            {
+                float reach = 1.0f;
+                std::memcpy (&reach, in, sizeof (reach));
+                frame.reach = std::isfinite (reach) ? juce::jlimit (1.0e-3f, scope::fieldMaxReach, reach) : 1.0f;
+                in += sizeof (reach);
+            }
+
+            frame.eq = eq;
+            if (eq)
+            {
+                std::memcpy (&frame.eqWidth, in, sizeof (float));
+                std::memcpy (frame.curve, in + sizeof (float), sizeof (frame.curve));
+                frame.eqWidth = finite (frame.eqWidth, 0.1f, 20.0f);
+                for (auto& v : frame.curve)
+                    v = finite (v, 0.0f, 1.0f);
+            }
+            for (int p = 0; p < 2; ++p)
+            {
+                frame.panels[p].points.resize ((size_t) juce::jmin ((int) head.points[p], scope::maxPanelPoints));
+                frame.panels[p].secondStart = head.secondStart[p];
             }
         }
-
-        const char* payload = data + sizeof (header);
-        for (int i = 0; i < frames; ++i)
+        else if (header.kind == 2)
         {
-            std::memcpy (&left[i], payload + (size_t) (2 * i) * sizeof (float), sizeof (float));
-            std::memcpy (&right[i], payload + (size_t) (2 * i + 1) * sizeof (float), sizeof (float));
+            const int first = header.first, count = header.count;
+            if (count < 1 || count > net::maxSamplesPerChunk || first + count > scope::fieldSamples * scope::fieldBands
+                || payloadSize < count * (int) sizeof (juce::int16))
+                return;
+
+            auto& samples = frame.sources[header.panel].samples;
+            if ((int) samples.size() < first + count)
+                samples.resize ((size_t) (first + count));   // the head, which has the size, is still to come
+            for (int i = 0; i < count; ++i)
+            {
+                juce::int16 wire = 0;
+                std::memcpy (&wire, payload + (size_t) i * sizeof (wire), sizeof (wire));
+                samples[(size_t) (first + i)] = (float) wire / 32767.0f;
+            }
+        }
+        else if (header.kind == 1)
+        {
+            const int first = header.first, count = header.count;
+            if (count < 1 || count > net::maxPointsPerChunk || first + count > scope::maxPanelPoints
+                || payloadSize < count * (int) sizeof (net::WirePoint))
+                return;
+
+            auto& points = frame.panels[header.panel].points;
+            if ((int) points.size() < first + count)
+                points.resize ((size_t) (first + count));   // the head, which has the size, is still to come
+
+            for (int i = 0; i < count; ++i)
+            {
+                net::WirePoint wire;
+                std::memcpy (&wire, payload + (size_t) i * sizeof (wire), sizeof (wire));
+                constexpr float c = 1.0f / 16384.0f, u = 1.0f / 255.0f;
+                points[(size_t) (first + i)] = { (float) wire.x * c, (float) wire.y * c, (float) wire.z * c,
+                                                 (float) wire.r * u, (float) wire.g * u, (float) wire.b * u, (float) wire.a * u };
+            }
+        }
+        else
+        {
+            return;
         }
 
-        slot->source.sampleRate.store ((double) juce::jlimit ((juce::uint32) 8000, (juce::uint32) 384000, header.sampleRate));
-        slot->source.rings[0].push (left, frames);
-        slot->source.rings[1].push (right, frames);
-        slot->streamMask.store (mask);
+        // All there: this is the frame to draw now.
+        if (! slot->chunksHere.test (header.chunk))
+        {
+            slot->chunksHere.set (header.chunk);
+            ++slot->numChunksHere;
+        }
+        if (slot->numChunksHere == header.chunks)
+        {
+            frame.buildTriangles();
+            slot->feed.publish (std::move (slot->building));
+            slot->building = nullptr;
+            slot->streamMask.store (mask);
+        }
     }
 
     juce::DatagramSocket socket { false };
     int audioPort = 0;
     std::array<Slot, maxLayers> slots;
-    Slot testSlot;
+    Test test;
     std::atomic<juce::uint32> lastPacketMs[net::maxStreams + 1];
     std::atomic<int> lostPackets[net::maxStreams + 1];
-    TestTone tone;
 };

@@ -330,7 +330,7 @@ private:
         for (int i = 0; i < count; ++i)
         {
             const auto& layer = heard[(size_t) i];
-            list[(size_t) i] = { layer.source, grid.viewFor (cell, layer.streamMask, layer.source->get (scope::pDivide) > 0.5f) };
+            list[(size_t) i] = { layer.feed, grid.viewFor (cell, layer.streamMask, layer.feed->params.get (scope::pDivide) > 0.5f) };
         }
         return count;
     }

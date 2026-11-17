@@ -2,35 +2,75 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include "RingBuffer.h"
 #include "ScopeParams.h"
 
-// Everything a ScopeComponent needs to draw: the two sample rings, the
-// sample rate, and the current parameter values. The plugin feeds one from
-// its audio callback; a cluster node or wall feeds one per network stream.
-struct ScopeSource
+// The current values of the parameters in scope::paramTable, real (not
+// normalised). param[] points at local[] unless the owner redirects it, as
+// the plugin does to its host parameters.
+struct ScopeParamSet
 {
-    // 2^17 samples: ~0.68 s at 192 kHz, more than the render thread ever reads.
-    static constexpr size_t ringSize = 1u << 17;
-
-    ScopeSource()
+    ScopeParamSet()
     {
         for (int i = 0; i < scope::numParams; ++i)
         {
             local[i].store (scope::paramTable[i].def);
-            param[i] = &local[i];
+            param[i].store (&local[i]);
         }
     }
 
-    float get (int index) const noexcept { return param[index]->load (std::memory_order_relaxed); }
+    float get (int index) const noexcept
+    {
+        return param[index].load (std::memory_order_relaxed)->load (std::memory_order_relaxed);
+    }
+
+    // Back to its own storage, keeping the values: for when what param[]
+    // was redirected to is about to go away.
+    void detach() noexcept
+    {
+        for (int i = 0; i < scope::numParams; ++i)
+        {
+            local[i].store (get (i));
+            param[i].store (&local[i]);
+        }
+    }
+
+    std::atomic<float> local[scope::numParams];
+    std::atomic<const std::atomic<float>*> param[scope::numParams];
+};
+
+// One instance's audio and settings: the two sample rings, the sample rate
+// and the parameter values. The plugin feeds one from its audio callback; a
+// CurveAnalyser turns it (and the others summed with it) into the curve a
+// scope draws.
+struct ScopeSource : ScopeParamSet
+{
+    // 2^17 samples: ~0.68 s at 192 kHz, more than an analyser ever reads.
+    static constexpr size_t ringSize = 1u << 17;
 
     ScopeRingBuffer rings[2] { ScopeRingBuffer (ringSize), ScopeRingBuffer (ringSize) };
     std::atomic<double> sampleRate { 48000.0 };
 
-    // Real (not normalised) values. param[] points at local[] unless the
-    // owner redirects it, as the plugin does to its host parameters.
-    std::atomic<float> local[scope::numParams];
-    const std::atomic<float>* param[scope::numParams];
+    // The audio is mono (both rings hold the same): draw one picture, not two.
+    std::atomic<bool> mono { false };
+
+    // A clock shared with the other instances in the same host, so their
+    // samples can be lined up: the sample at ring position p is at
+    // p + clockOffset on the clock. The domain says which clock (see
+    // scope::Clock); positions only compare within one domain.
+    std::atomic<int64_t> clockOffset { 0 };
+    std::atomic<int> clockDomain { 0 };
+
+    // The curve of the Field EQ (see ScopeParams.h). It starts as low
+    // pitches at the centre, rising evenly to high ones further out.
+    std::atomic<float> fieldCurve[scope::fieldCurvePoints];
+
+    ScopeSource()
+    {
+        for (int i = 0; i < scope::fieldCurvePoints; ++i)
+            fieldCurve[i].store (0.15f + 0.7f * (float) i / (float) (scope::fieldCurvePoints - 1));
+    }
 };
 
 // Built-in test signal: L = 20 Hz + 60 Hz, R = 20 Hz + 60.5 Hz.

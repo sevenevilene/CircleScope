@@ -2,6 +2,9 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "ScopeSource.h"
+#include "ScopeCurve.h"
+#include "CurveAnalyser.h"
+#include "InstanceRegistry.h"
 #include "NetSender.h"
 
 class CircleScopeProcessor : public juce::AudioProcessor,
@@ -43,23 +46,43 @@ public:
     // Nodes and walls on the network currently receiving this instance.
     int getNumNetworkTargets() const { return sender.getNumTargets(); }
 
+    // The other instances in this host whose audio is added to this one's
+    // drawing (see CurveAnalyser), by their ids. The choice is saved with
+    // the session.
+    juce::Uuid getInstanceId() const { return instanceId; }
+    std::vector<juce::Uuid> getPartnerIds() const;
+    void setPartner (const juce::Uuid&, bool shouldBeSummed);
+    std::vector<std::shared_ptr<const ScopeSource>> getPartners() const;   // those of them that exist now
+
+    void updateTrackProperties (const TrackProperties&) override;
+
+    // Shared, because other instances may be adding this one to their drawings.
+    const std::shared_ptr<ScopeSource> sourceHolder = std::make_shared<ScopeSource>();
+
     juce::AudioProcessorValueTreeState apvts;
-    ScopeSource source;   // what the scopes draw; its parameters point into apvts
+    ScopeSource& source = *sourceHolder;   // this instance's audio; its parameters point into apvts
+    scope::CurveFeed feed { source };      // its drawing: what the scopes show and the network gets
 
 private:
     void timerCallback() override;
+    void updateClock();
 
     bool bindSourceToParameters();
     NetSender::StreamSwitches streamSwitches();
 
-    const bool sourceBound;   // initialised before sender, whose thread reads source
+    juce::Uuid instanceId;
+    juce::CriticalSection partnerLock;
+    std::vector<juce::Uuid> partnerIds;
+
+    const bool sourceBound;   // initialised before the analyser and sender, whose threads read source
     TestTone testTone;
 
     // MIDI CCs arrive on the audio thread; the timer applies them to the
     // parameters on the message thread. -1 = nothing pending.
     std::atomic<int> pendingCc[scope::numParams];
 
-    NetSender sender;   // declared last: its thread reads source
+    CurveAnalyser analyser { source, feed, [this] { return getPartners(); } };
+    NetSender sender;   // declared last: its thread reads the feed
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CircleScopeProcessor)
 };

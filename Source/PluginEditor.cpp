@@ -3,10 +3,12 @@
 CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     : AudioProcessorEditor (p),
       scopeProcessor (p),
-      scope (p.source, true),
+      scope (p.feed, true),
+      cameraPad (p.apvts),
       controls (p, &fullScreenButton, false)
 {
     addAndMakeVisible (scope);
+    scope.addAndMakeVisible (cameraPad);
     addAndMakeVisible (controls);
 
     fullScreenButton.setTooltip ("Full screen (or double-click the scope). Esc or F exits.");
@@ -14,12 +16,23 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     scope.onDoubleClick = [this] { toggleFullScreen(); };
 
     setResizable (true, true);
-    setResizeLimits (800, 440, 2400, 1400);
-    setSize (980, 650);
+    setResizeLimits (800, 740, 2400, 1500);
+    setSize (980, 950);
+
+    startTimerHz (5);
+    timerCallback();
+}
+
+// While any instance in the host is in full screen, no editor draws its
+// scope: this one's, or another instance's that is open beside it.
+void CircleScopeEditor::timerCallback()
+{
+    scope.setVisible (FullScreenWindow::numShowing.load() == 0);
 }
 
 CircleScopeEditor::~CircleScopeEditor()
 {
+    stopTimer();
     fullScreen.reset();   // leave kiosk mode before the editor goes away
 }
 
@@ -29,6 +42,7 @@ void CircleScopeEditor::toggleFullScreen()
     {
         fullScreen.reset();
         fullScreenButton.setButtonText ("Full screen");
+        timerCallback();
         return;
     }
 
@@ -42,6 +56,8 @@ void CircleScopeEditor::toggleFullScreen()
         scopeProcessor, display->totalArea,
         [safeThis] { if (safeThis != nullptr && safeThis->fullScreen != nullptr) safeThis->toggleFullScreen(); });
     fullScreenButton.setButtonText ("Exit full screen");
+
+    timerCallback();
 }
 
 void CircleScopeEditor::paint (juce::Graphics& g)
@@ -54,4 +70,5 @@ void CircleScopeEditor::resized()
     auto area = getLocalBounds();
     controls.setBounds (area.removeFromBottom (ControlPanel::preferredHeight));
     scope.setBounds (area);
+    cameraPad.setTopLeftPosition (8, scope.getHeight() - CameraPad::height - 8);
 }

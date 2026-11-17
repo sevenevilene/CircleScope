@@ -1,55 +1,41 @@
 #pragma once
 
-#include <juce_dsp/juce_dsp.h>
 #include <juce_opengl/juce_opengl.h>
 #include <array>
-#include <complex>
-#include <optional>
-#include "ScopeSource.h"
+#include "ScopeCurve.h"
 
-// Draws the stereo signal as 2D trajectories.
+// Draws finished frames. A scope does no analysis and sees no audio: every
+// layer is a CurveFeed, which hands it the newest frame of a drawing (the
+// points of its curves, in 3D) and the parameters that say how to show it.
+// The plugin's own scopes draw its analyser's feed; a wall or a cluster
+// node draws the feeds it receives from the network, one per plugin
+// instance sending to the stream shown. So all of them show the same thing.
 //
-// Per-channel trajectory (Side by side / Overlay layouts):
-//   Quadrature:  x = s(t), y = H{s}(t) (90 degrees shifted, via the analytic
-//                signal). A pure sine traces a perfect circle.
-//   Delay embed: x = s(t), y = s(t - delay).
-//   Swing:       the signal moves a point along an axis through the centre,
-//                and the axis swings round in the plane, so the point is at
-//                s(t) * (cos a(t), sin a(t)): a polar plot. The axis either
-//                swings back and forth like a pendulum, 180 degrees each
-//                way, or turns round and round, once per Window length or
-//                at a free rate. A rate tied to the pitch gives a still
-//                figure (a rose); slightly off, it slowly turns.
-//
-// Mid / side layout: a goniometer. Vertical = mid (L+R), horizontal = side
-// (R-L). Mono is a vertical line, out-of-phase a horizontal one. A
-// correlation bar runs along the bottom (-1 to +1).
-//
-// Low cut / High cut band-limit the signal in the frequency domain before
-// any of that, so several scopes can each show one band of the same audio.
-//
-// A scope draws one or more layers, each from a source of its own (its
-// samples and its settings), combined bottom to top by the upper layer's
-// blend mode. The plugin's own scopes have one layer; on a wall or a cluster
-// node every plugin instance sending to the stream shown is a layer.
+// The layers are combined bottom to top by the upper layer's blend mode.
+// One camera looks at the whole scene (Plane.h): the view of the lowest
+// layer that has turned it.
 //
 // A layer normally shows its whole picture. Its View makes it show only a
 // part of a larger virtual canvas instead: that is how one picture is tiled
 // over the screens of a video wall or the cells of a grid.
 //
-// Threads: every layer has its own analysis thread, which reads the samples,
-// does the FFT work and builds the trace geometry for the next frame. The GL
-// thread (JUCE shares one between all scopes) only draws the latest finished
-// frame, so a grid of scopes spreads its heavy work over the CPU cores.
+// A frame is curves, drawn as lines, or a field of standing waves (the
+// Field mode), which is drawn here from its sources: every plane in it is
+// a large sheet, and the fragment shader works out each pixel of it from
+// where the pixel is along every source's axes. Or, as a volume, the
+// shader walks along each pixel's line of sight through the field and adds
+// up what it meets, the near hiding the far. With the lens open
+// (Field aperture) its steps look through different parts of a lens, which
+// blurs what is off the depth in focus.
 //
 // Image pipeline (all half-float render targets):
 //   per layer
 //     accum   : afterglow; decays every frame, gets this frame's traces added
 //     current : this frame's traces only, at full strength (the "beam")
 //     blur    : accum + current, Gaussian blurred (separable, half resolution)
-//   canvas  : background + the bottom layer's guides, then every layer's
-//             tone map (brightness, contrast) of accum + current + blur halo,
-//             combined with what is under it by its blend mode
+//   canvas  : background + the guides of every plane in use, then every
+//             layer's tone map (brightness, contrast) of accum + current +
+//             blur halo, combined with what is under it by its blend mode
 //   screen  : the canvas
 class ScopeComponent : public juce::Component,
                        private juce::OpenGLRenderer,
@@ -61,7 +47,7 @@ public:
 
     struct Layer
     {
-        const ScopeSource* source = nullptr;   // must outlive the scope
+        const scope::CurveFeed* feed = nullptr;   // must outlive the scope
         View view;
     };
 
@@ -75,7 +61,7 @@ public:
     // showLabels: paint the small text labels (L, R, M, S) over the picture.
     // Off gives a clean image and skips JUCE's component painting entirely.
     ScopeComponent (LayerProvider, bool showLabels);
-    ScopeComponent (const ScopeSource&, bool showLabels);   // one layer, the whole picture
+    ScopeComponent (const scope::CurveFeed&, bool showLabels);   // one layer, the whole picture
     ~ScopeComponent() override;
 
     void setLayerProvider (LayerProvider);
@@ -95,22 +81,20 @@ public:
     std::function<void()> onDoubleClick;
 
 private:
-    struct Vertex { float x, y, r, g, b, a; };
-    enum class Layout { sideBySide = 0, overlay = 1, midSide = 2 };
-    using Mode = scope::Mode;
+    using Vertex = scope::Vertex;
+    using Layout = scope::Layout;
 
-    struct Settings
+    // How a layer is shown: the part of its parameters a scope uses.
+    struct Look
     {
-        scope::Mode mode;
-        bool fixedColour, guides;
-        Layout layout;
         int blend;                 // scope::Blend
-        bool swingRound;
-        float swingHz;
-        float windowMs, delayMs, afterglowMs;
-        float brightness, contrast, blurPx;
-        float lowCutHz, highCutHz;
-        double sampleRate;
+        float afterglowMs, brightness, contrast, blurPx;
+        float viewYaw, viewPitch, viewRoll;
+        scope::Vec3 cameraAt;      // the point of the scene the camera looks at
+        bool fieldVolume;          // Field mode: the whole volume, not only the planes' cuts
+        float fieldDensity;        // and how much a plane unit of full field hides what is behind it
+        float fieldFocus;          // the depth that is sharp, towards the viewer from the centre of the scene
+        float fieldAperture;       // 0..1: how much the rest blurs; 0 is everything sharp
     };
 
     // Where one panel lands in this component's framebuffer: a transform from
@@ -120,9 +104,6 @@ private:
         float scaleX, scaleY, offsetX, offsetY;
         juce::Rectangle<int> scissor;
     };
-
-    // Sample range of the analysis block that gets drawn this frame.
-    struct Range { int start, end, length, delay, stride, freqLag; };
 
     // Offscreen half-float colour buffer.
     struct RenderTarget
@@ -142,35 +123,30 @@ private:
     void openGLContextClosing() override;
     void timerCallback() override;
 
-    bool usePanel (const PanelPlacement&);
+    bool usePanel (const PanelPlacement&, const scope::Mat3& orient, float halfWidth, scope::Vec3 shift = {});
     void capturePreview (GLuint screenFbo, int w, int h);
-    void addTrajectoryGuides (float halfWidth);
-    void addGoniometerGuides (float halfWidth, float correlation);
+    void addTrajectoryGuides();
+    void addGoniometerGuides (float correlation);
     void addFullScreenQuad (float r, float g, float b, float a);
     void drawVertices (const std::vector<Vertex>&, GLint positionAttrib, GLint colourAttrib);
     void drawFullScreen (const juce::OpenGLShaderProgram&);
     void useLineShader (float alphaScale);
     void setLineTransform (float scaleX, float scaleY, float offsetX, float offsetY);
 
-    static Settings readSettings (const ScopeSource*);
-    static PanelPlacement placePanel (Layout, int panel, int w, int h, int margin, View);
+    static Look readLook (const ScopeParamSet*);
+    static scope::Camera cameraOf (const Look&);
+    static PanelPlacement placePanel (Layout, int panel, int w, int h, int margin, View, bool flat);
     static float lineHalfWidthFor (Layout, View, int w, int h, int margin, float scale);
-    static void addSegment (std::vector<Vertex>&, Vertex a, Vertex b, float halfWidth);
     static int numPanels (Layout);
     static juce::Rectangle<int> panelBounds (Layout, int panel, int w, int h, int margin);
-    static juce::Colour colourForFrequency (double hz);
-
-    static constexpr int fftOrder = 14;
-    static constexpr int blockSize = 1 << fftOrder;   // 16384 samples
-    static constexpr int edgeMargin = 1024;          // skip FFT edge artefacts
 
     LayerProvider provider;
     juce::SpinLock providerLock;
     const bool showLabels;
     juce::OpenGLContext context;
 
-    std::unique_ptr<juce::OpenGLShaderProgram> lineShader, blurShader, blendShader, copyShader;
-    GLint linePosition = -1, lineColour = -1;
+    std::unique_ptr<juce::OpenGLShaderProgram> lineShader, fieldShader, volumeShader, blurShader, blendShader, copyShader;
+    GLint linePosition = -1, lineColour = -1, lineOther = -1, lineDepth = -1;
     GLuint vbo = 0, vao = 0;
 
     // GL thread.
@@ -187,7 +163,7 @@ private:
     juce::SpinLock rendererNameLock;
     juce::String rendererName;
 
-    // drawnLayout: the bottom layer's, set by the GL thread. shownLayout: what the labels were painted for.
+    // drawnLayout: the bottom layer's (-1 when it is not one flat picture, so the labels would not fit), set by the GL thread. shownLayout: what the labels were painted for.
     std::atomic<int> width { 0 }, height { 0 }, drawnLayout { 0 }, shownLayout { -1 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScopeComponent)
