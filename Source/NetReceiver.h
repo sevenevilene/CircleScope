@@ -304,7 +304,7 @@ private:
             const int eqBytes = eq ? (int) (sizeof (float) + sizeof (frame.curve)) : 0;
             if (head.numGuides > scope::maxGuidePlanes || head.numSources > scope::maxFieldSources
                 || payloadSize < (int) sizeof (head) + numGuides * (int) sizeof (net::WirePlane)
-                                     + numSources * (int) sizeof (net::WireSource) + (numSources > 0 ? (int) sizeof (float) : 0) + eqBytes)
+                                     + numSources * (int) sizeof (net::WireSource) + (numSources > 0 ? (int) (sizeof (float) + sizeof (frame.bandColour)) : 0) + eqBytes)
                 return;
 
             auto finite = [] (float v, float low, float high) { return std::isfinite (v) ? juce::jlimit (low, high, v) : 0.0f; };
@@ -335,11 +335,10 @@ private:
                 std::memcpy (&wire, in, sizeof (wire));
                 auto& s = frame.sources[k];
                 readPlane (wire.where, s.plane, s.at);
-                s.r = finite (wire.colour[0], 0.0f, 1.0f);
-                s.g = finite (wire.colour[1], 0.0f, 1.0f);
-                s.b = finite (wire.colour[2], 0.0f, 1.0f);
+                for (int band = 0; band < scope::fieldBands; ++band)
+                    s.level[band] = finite (wire.level[band], 0.0f, 4.0f);
                 s.fade = finite (wire.fade, 0.0f, 10.0f);
-                s.samples.resize ((size_t) (scope::fieldSamples * (eq ? scope::fieldBands : 1)));   // keeps what has arrived already
+                s.samples.resize ((size_t) (scope::fieldSamples * scope::fieldBands));   // keeps what has arrived already
             }
             if (numSources > 0)
             {
@@ -347,6 +346,12 @@ private:
                 std::memcpy (&reach, in, sizeof (reach));
                 frame.reach = std::isfinite (reach) ? juce::jlimit (1.0e-3f, scope::fieldMaxReach, reach) : 1.0f;
                 in += sizeof (reach);
+
+                std::memcpy (frame.bandColour, in, sizeof (frame.bandColour));
+                for (auto& colour : frame.bandColour)
+                    for (auto& v : colour)
+                        v = finite (v, 0.0f, 1.0f);
+                in += sizeof (frame.bandColour);
             }
 
             frame.eq = eq;

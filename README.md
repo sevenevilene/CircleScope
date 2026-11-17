@@ -26,14 +26,18 @@ Each channel is drawn as a 2D trajectory in its own square:
 
 - **Field**: not a curve but a field of standing waves, worked out on the
   graphics card. The picture is filled with dots that stay where they are
-  and swing between a colour and its complement, through dark. Every tone
+  and swing between the colour of their pitch and its opposite. Every tone
   in the sound makes a grid of them, each dot the opposite of its
   neighbours, and as large as the tone is low: a bass note is a few big
   dots, the highest notes are dots of a pixel, like fine noise, and a
   sound is the grids of all its tones added. **Window** is the scale: the
-  shorter it is, the larger everything gets. Positive has the colour set
-  by **Field hue**, negative the complementary colour. **Field fade** dims
-  the field with distance from the instance's position.
+  shorter it is, the larger everything gets. The colours are the scene's
+  (see **Colours** below): the sound is split into eight bands of pitch,
+  and each takes its colour from the scale where it is positive, the
+  opposite hue where it is negative, and a blend of the two in between, so
+  a dot changes colour with the phase of its tone. Where bands overlap,
+  their colours are averaged by strength. **Field fade** dims the field
+  with distance from the instance's position.
 
   **Field shape** can be Rings instead of Dots. Then the instance is a
   point that its sound spreads out from in all directions: at a distance
@@ -96,8 +100,16 @@ The **Mono** layout draws one picture, of the two channels' average. On a
 mono track the plugin always draws that way, whatever the layout says: there
 is no second channel to put beside it.
 
-Colour shows instantaneous frequency (20 Hz red to 20 kHz blue), and brightness
-shows the trail's age. **Test tone** shows 20 Hz + 60 Hz on L and
+Colour shows instantaneous frequency, and brightness shows the trail's age.
+
+**Colours** is the scene's colour scale: a strip from 20 Hz at the left to
+20 kHz at the right (red to blue until you change it). Click it to add a
+stop, drag a stop to move it, double-click one to choose its colour, and
+right-click one (or drag it well off the strip) to remove it. There is one
+scale for the whole scene: every instance in the host shows and edits the
+same one, every mode takes its colours from it, and it is saved with the
+session. A host that runs each plugin in a process of its own gives each
+instance its own. **Test tone** shows 20 Hz + 60 Hz on L and
 20 Hz + 60.5 Hz on R, so the two channels slowly drift apart.
 
 ## Planes
@@ -125,8 +137,9 @@ of its own in the same space:
   the line of sight. Hold forward and steer with Look to fly through the
   scene. The camera's place is **Camera X / Y / Z**, the point it looks at
   from four units away; like the view angles they are host parameters, so a
-  flight can be recorded as automation. A double-click on the pad puts the
-  camera back.
+  flight can be recorded as automation. **Reset** on the pad (or a
+  double-click on it) puts the view back: straight on, at the centre, with
+  no roll.
 
 **Sum with...** adds other CircleScope instances in the same session to
 this instance's drawing: the button lists them by track name, tick the ones
@@ -244,7 +257,7 @@ Three programs work together on one network:
   curves in 3D (in Field mode, the sources of the field and their sound) about sixty times a second, not audio: a node only draws, so
   all the screens show the same thing and a Raspberry Pi has little to do.
   It is more data than audio would be (15 to 20 Mbit/s for a full curve, and
-  about as much per source for a field with the EQ on), so use wired Ethernet. Instances sharing a stream are layers there too (see Layers
+  about as much per source of a field), so use wired Ethernet. Instances sharing a stream are layers there too (see Layers
   above); Divide only applies to a wall, since a node has its own place in
   the video wall set from the control app.
 - **CircleScopeNode**: runs on each display machine (Raspberry Pi 4, or any
@@ -275,6 +288,7 @@ render to: add `video=HDMI-A-1:1920x1080@60D` to `/boot/firmware/cmdline.txt`.
 - `Source/CameraPad.h`: the camera's sticks and arrows in the plugin's scope
 - `Source/ScopeSource.h`, `RingBuffer.h`: an instance's sample rings and parameter values
 - `Source/CurveAnalyser.*`: audio to drawing: analytic signal, band limits, auto-gain, the modes, summing instances
+- `Source/ColourScale.h`, `ColourScaleEditor.h`: the scene's colour scale, and the strip it is set with
 - `Source/ScopeCurve.h`: the drawing itself: frames of curve points, and the feed that hands them on
 - `Source/ScopeComponent.*`: draws frames: OpenGL rendering (lines, the field shaders), layers, wall regions, previews
 - `Source/InstanceRegistry.h`: the instances in one host, for Sum with

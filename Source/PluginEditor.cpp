@@ -10,6 +10,7 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     addAndMakeVisible (scope);
     scope.addAndMakeVisible (cameraPad);
     addAndMakeVisible (controls);
+    controls.onHeightChanged = [this] { resized(); };
 
     fullScreenButton.setTooltip ("Full screen (or double-click the scope). Esc or F exits.");
     fullScreenButton.onClick = [this] { toggleFullScreen(); };
@@ -68,7 +69,7 @@ void CircleScopeEditor::paint (juce::Graphics& g)
 void CircleScopeEditor::resized()
 {
     auto area = getLocalBounds();
-    controls.setBounds (area.removeFromBottom (ControlPanel::preferredHeight));
+    controls.setBounds (area.removeFromBottom (controls.getPreferredHeight()));
     scope.setBounds (area);
     cameraPad.setTopLeftPosition (8, scope.getHeight() - CameraPad::height - 8);
 }

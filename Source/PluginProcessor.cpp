@@ -257,6 +257,11 @@ void CircleScopeProcessor::getStateInformation (juce::MemoryBlock& destData)
         curve.add (juce::String (value.load(), 4));
     state.setProperty ("fieldCurve", curve.joinIntoString (","), nullptr);
 
+    // The scene's colour scale: every instance saves a copy, and the one
+    // changed last wins when they are loaded (ColourScale.h).
+    state.setProperty ("colourScale", scope::SceneColours::get().read().toString(), nullptr);
+    state.setProperty ("colourScaleChanged", juce::String (scope::SceneColours::get().getStamp()), nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -275,6 +280,9 @@ void CircleScopeProcessor::setStateInformation (const void* data, int sizeInByte
             if (curve.size() == scope::fieldCurvePoints)
                 for (int k = 0; k < scope::fieldCurvePoints; ++k)
                     source.fieldCurve[k].store (juce::jlimit (0.0f, 1.0f, curve[k].getFloatValue()));
+
+            if (scope::ColourScale scale; scale.fromString (apvts.state["colourScale"].toString()))
+                scope::SceneColours::get().offer (scale, apvts.state["colourScaleChanged"].toString().getLargeIntValue());
 
             if (const auto saved = apvts.state["instanceId"].toString(); saved.isNotEmpty())
                 if (InstanceRegistry::get().changeId (&source, juce::Uuid (saved)))

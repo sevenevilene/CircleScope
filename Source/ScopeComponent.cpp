@@ -106,11 +106,17 @@ namespace
     // The sound only reaches so far. Past that it is read back and forth
     // again, so the field goes on for ever, repeating like a reflection.
     //
-    // Source k has rows 8k to 8k + 7. Without the EQ the first is its whole
-    // sound. With it they are the sound in eight bands of pitch, lowest
-    // first, and a point gets the bands about the pitch the curve gives
-    // for its distance from the source, so each distance has its own
-    // range of pitch.
+    // Source k has rows 8k to 8k + 7: its sound in eight bands of pitch,
+    // lowest first, each filling -1..1 with its real strength beside it
+    // (bandLevel). With the EQ a point gets only the bands about the pitch
+    // the curve gives for its distance from the source, so each distance
+    // has its own range of pitch.
+    //
+    // The colour comes from the scene's colour map (ColourScale.h): pitch
+    // one way, amplitude the other. A band at +1 has its colour of the
+    // scale, at -1 the opposite hue, and in between the two blended, so it
+    // changes with the phase of the sound. The bands at a point are
+    // averaged by how strong each is there.
     constexpr const char* fieldCommon = R"(
         uniform sampler2D waves;
         uniform float reach;
@@ -118,6 +124,8 @@ namespace
         uniform float eq;             // 1: the EQ is on
         uniform float eqWidth;        // the width of the range of pitch let through, in bands
         uniform float curve[16];      // the pitch at each distance, 0..1 over the eight bands
+        uniform vec3 bandColour[8];   // each band's colour on the scale
+        uniform float bandLevel[64];  // how strong each band of each source is
 
         float wave (float along, float row)
         {
@@ -134,34 +142,52 @@ namespace
                            + wave (q.x - q.y + q.z, row) + wave (q.y + q.z - q.x, row));
         }
 
-        float field (vec3 q, float firstRow)
+        vec3 tint (vec3 c, float x)
         {
-            if (eq < 0.5)
-                return shape (q, firstRow);
+            vec3 opposite = vec3 (max (c.r, max (c.g, c.b)) + min (c.r, min (c.g, c.b))) - c;
+            return mix (opposite, c, 0.5 + 0.5 * clamp (x, -1.0, 1.0));
+        }
 
-            float along = clamp (length (q) / 2.0, 0.0, 1.0) * 15.0;
-            int i = int (min (floor (along), 14.0));
-            float pitch = mix (curve[i], curve[i + 1], along - float (i)) * 8.0;
+        // The field of source k at a point, given in the source's own axes:
+        // its amplitude, and its colour there.
+        float field (vec3 q, int k, out vec3 colour)
+        {
+            float pitch = 0.0;
+            if (eq > 0.5)
+            {
+                float along = clamp (length (q) / 2.0, 0.0, 1.0) * 15.0;
+                int i = int (min (floor (along), 14.0));
+                pitch = mix (curve[i], curve[i + 1], along - float (i)) * 8.0;
+            }
 
-            float a = 0.0;
+            float a = 0.0, weight = 0.0;
+            vec3 sum = vec3 (0.0);
             for (int b = 0; b < 8; ++b)
             {
-                float lets = clamp (1.0 + 0.5 * eqWidth - abs (float (b) + 0.5 - pitch), 0.0, 1.0);
-                if (lets > 0.01)
-                    a += lets * shape (q, firstRow + float (b));
+                float lets = bandLevel[k * 8 + b];
+                if (eq > 0.5)
+                    lets *= clamp (1.0 + 0.5 * eqWidth - abs (float (b) + 0.5 - pitch), 0.0, 1.0);
+
+                // A band too faint to see is not worth its look-ups.
+                if (lets > 0.004)
+                {
+                    float x = shape (q, float (k * 8 + b));
+                    a += lets * x;
+                    sum += lets * abs (x) * tint (bandColour[b], x);
+                    weight += lets * abs (x);
+                }
             }
+            colour = sum / max (weight, 1.0e-6);
             return a;
         }
     )";
 
-    // The field on a plane. Positive is the source's colour and negative
-    // the complement, the amplitude is how much of it, it fades with
-    // distance from the source, and the sources are added as light.
+    // The field on a plane. The amplitude is how bright it is, it fades
+    // with distance from the source, and the sources are added as light.
     const juce::String fieldFragmentShader = juce::String (fieldCommon) + R"(
         uniform int count;
         uniform vec3 sourceAt[8];
         uniform mat3 sourceAxes[8];   // the scene to the source's own axes
-        uniform vec3 sourceColour[8];
         uniform float sourceFade[8];
         uniform float alphaScale;
         varying vec3 where;
@@ -175,8 +201,9 @@ namespace
                     break;
 
                 vec3 q = sourceAxes[k] * (where - sourceAt[k]);
-                float a = field (q, float (k) * 8.0) * max (0.0, 1.0 - sourceFade[k] * length (q));
-                light += abs (a) * (a > 0.0 ? sourceColour[k] : vec3 (1.0) - sourceColour[k]);
+                vec3 colour;
+                float a = field (q, k, colour) * max (0.0, 1.0 - sourceFade[k] * length (q));
+                light += abs (a) * colour;
             }
             gl_FragColor = vec4 (light, alphaScale);
         }
@@ -203,7 +230,6 @@ namespace
         uniform int count;
         uniform vec3 sourceAt[8];
         uniform mat3 sourceAxes[8];
-        uniform vec3 sourceColour[8];
         uniform float sourceFade[8];
         uniform mat3 cameraBack;  // the viewer's space to the scene, for directions
         uniform vec3 eyeAt;       // where the eye is in the scene
@@ -273,7 +299,8 @@ namespace
                             break;
 
                         vec3 q = sourceAxes[k] * (p - sourceAt[k]);
-                        float a = field (q, float (k) * 8.0);
+                        vec3 colour;
+                        float a = field (q, k, colour);
                         float dim = max (0.0, 1.0 - sourceFade[k] * length (q));
 
                         // How solid a point is follows the amplitude, so the
@@ -283,7 +310,7 @@ namespace
                         // shell of a ring would hide all the shells inside
                         // it, so rings let most of the light through.
                         float m = abs (a) * dim * (rings > 0.5 ? 0.3 : 2.0);
-                        glow += m * (a > 0.0 ? sourceColour[k] : vec3 (1.0) - sourceColour[k]);
+                        glow += m * colour;
                         thick += m;
                     }
 
@@ -1042,7 +1069,7 @@ void ScopeComponent::LayerRenderer::uploadField()
     fieldPixels.assign ((size_t) (across * rows), 0.0f);
     for (int k = 0; k < juce::jmin (frame->numSources, scope::maxFieldSources); ++k)
     {
-        // A source's rows: its whole sound in the first, or its bands in all of them.
+        // A source's rows: its bands of pitch.
         const auto& samples = frame->sources[k].samples;
         std::copy_n (samples.begin(), juce::jmin (samples.size(), (size_t) (across * scope::fieldBands)),
                      fieldPixels.begin() + k * across * scope::fieldBands);
@@ -1058,15 +1085,16 @@ void ScopeComponent::LayerRenderer::uploadField()
 void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shader)
 {
     const int count = juce::jmin (frame->numSources, scope::maxFieldSources);
-    float at[scope::maxFieldSources * 3] {}, colour[scope::maxFieldSources * 3] {}, fade[scope::maxFieldSources] {};
+    float at[scope::maxFieldSources * 3] {}, fade[scope::maxFieldSources] {};
+    float level[scope::maxFieldSources * scope::fieldBands] {};
     float axes[scope::maxFieldSources * 9] {};
 
     for (int k = 0; k < count; ++k)
     {
         const auto& s = frame->sources[k];
         at[k * 3] = s.at.x;     at[k * 3 + 1] = s.at.y;     at[k * 3 + 2] = s.at.z;
-        colour[k * 3] = s.r;    colour[k * 3 + 1] = s.g;    colour[k * 3 + 2] = s.b;
         fade[k] = s.fade;
+        std::copy_n (s.level, scope::fieldBands, level + k * scope::fieldBands);
 
         // The plane turned back: its transpose.
         for (int col = 0; col < 3; ++col)
@@ -1077,7 +1105,8 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     shader.use();
     const auto program = shader.getProgramID();
     glUniform3fv (glGetUniformLocation (program, "sourceAt"), scope::maxFieldSources, at);
-    glUniform3fv (glGetUniformLocation (program, "sourceColour"), scope::maxFieldSources, colour);
+    glUniform3fv (glGetUniformLocation (program, "bandColour"), scope::fieldBands, &frame->bandColour[0][0]);
+    glUniform1fv (glGetUniformLocation (program, "bandLevel"), scope::maxFieldSources * scope::fieldBands, level);
     glUniform1fv (glGetUniformLocation (program, "sourceFade"), scope::maxFieldSources, fade);
     glUniformMatrix3fv (glGetUniformLocation (program, "sourceAxes"), scope::maxFieldSources, GL_FALSE, axes);
     shader.setUniform ("count", (GLint) count);

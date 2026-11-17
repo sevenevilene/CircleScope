@@ -15,8 +15,9 @@
 //
 // So holding Forward and steering with Look flies through the scene. It
 // all goes through the plugin's parameters, as gestures, so a host can
-// record a flight as automation and play it back. A double-click puts the
-// camera back where it started.
+// record a flight as automation and play it back. Reset (or a double-click
+// on the pad) puts the camera back where it started: straight on, at the
+// centre, with no roll.
 //
 // It only shows while the mouse is over the scope.
 class CameraPad : public juce::Component,
@@ -24,7 +25,7 @@ class CameraPad : public juce::Component,
                   private juce::Timer
 {
 public:
-    static constexpr int width = 250, height = 100;
+    static constexpr int width = 306, height = 100;
 
     explicit CameraPad (juce::AudioProcessorValueTreeState& state)
     {
@@ -32,9 +33,10 @@ public:
         for (int i = 0; i < numValues; ++i)
             params[i] = state.getParameter (ids[i]);
         roll = state.getRawParameterValue ("viewroll");
+        rollParam = state.getParameter ("viewroll");
 
         setSize (width, height);
-        setTooltip ("Camera. Orbit: go round the point it looks at. Look: turn it where it stands. Move: hold an arrow to travel; hold the one pointing away and steer with Look to fly through. Double-click to reset");
+        setTooltip ("Camera. Orbit: go round the point it looks at. Look: turn it where it stands. Move: hold an arrow to travel; hold the one pointing away and steer with Look to fly through. Reset puts the view back");
         startTimerHz (10);
     }
 
@@ -77,6 +79,14 @@ public:
             g.fillPath (head);
         }
 
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.fillRoundedRectangle (resetArea, 6.0f);
+        g.setColour (line);
+        g.drawRoundedRectangle (resetArea, 6.0f, 1.0f);
+        g.setColour (solid);
+        g.setFont (12.0f);
+        g.drawText ("Reset", resetArea, juce::Justification::centred);
+
         g.setColour (juce::Colours::white.withAlpha (0.7f));
         g.setFont (11.0f);
         const char* names[] { "Orbit", "Look", "Move" };
@@ -87,6 +97,12 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        if (resetArea.contains (e.position))
+        {
+            resetCamera();
+            return;
+        }
+
         held = controlAt (e.position);
         if (held < 0)
             return;
@@ -133,16 +149,23 @@ public:
         repaint();
     }
 
-    void mouseDoubleClick (const juce::MouseEvent&) override
+    void mouseDoubleClick (const juce::MouseEvent&) override { resetCamera(); }
+
+    // Straight on, at the centre of the scene, with no roll.
+    void resetCamera()
     {
-        for (auto* p : params)
+        auto toDefault = [] (juce::RangedAudioParameter* p)
         {
             if (p == nullptr)
-                continue;
+                return;
             p->beginChangeGesture();
             p->setValueNotifyingHost (p->getDefaultValue());
             p->endChangeGesture();
-        }
+        };
+
+        for (auto* p : params)
+            toDefault (p);
+        toDefault (rollParam);
     }
 
 private:
@@ -153,6 +176,7 @@ private:
     static constexpr float turnRate = 70.0f;             // degrees a second, with a stick right out
     static constexpr float moveRate = 1.5f;              // plane units a second
     static inline const juce::Point<float> arrowCentre { 204.0f, 42.0f };
+    static inline const juce::Rectangle<float> resetArea { 252.0f, 30.0f, 48.0f, 24.0f };
 
     static juce::Point<float> stickCentre (int i) { return { i == 0 ? 44.0f : 124.0f, 42.0f }; }
 
@@ -247,6 +271,7 @@ private:
 
     juce::RangedAudioParameter* params[numValues] {};
     std::atomic<float>* roll = nullptr;
+    juce::RangedAudioParameter* rollParam = nullptr;
     double value[numValues] {};
     juce::Point<float> orbit, look;                      // the sticks: x right, y up, -1..1
     int held = -1;

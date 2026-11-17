@@ -137,7 +137,7 @@ private:
             chunks += (numPoints[p] + net::maxPointsPerChunk - 1) / net::maxPointsPerChunk;
         }
         const int numSources = juce::jlimit (0, scope::maxFieldSources, frame.numSources);
-        const int waveSamples = scope::fieldSamples * (frame.eq ? scope::fieldBands : 1);
+        const int waveSamples = scope::fieldSamples * scope::fieldBands;
         const int chunksPerWave = (waveSamples + net::maxSamplesPerChunk - 1) / net::maxSamplesPerChunk;
         chunks += numSources * chunksPerWave;
         if (chunks > net::maxChunks)
@@ -177,14 +177,16 @@ private:
             for (int k = 0; k < numSources; ++k)
             {
                 const auto& s = frame.sources[k];
-                const net::WireSource wire { wirePlane (s.plane, s.at), { s.r, s.g, s.b }, s.fade };
+                net::WireSource wire { wirePlane (s.plane, s.at), {}, s.fade };
+                std::memcpy (wire.level, s.level, sizeof (wire.level));
                 std::memcpy (out, &wire, sizeof (wire));
                 out += sizeof (wire);
             }
             if (numSources > 0)
             {
                 std::memcpy (out, &frame.reach, sizeof (float));
-                out += sizeof (float);
+                std::memcpy (out + sizeof (float), frame.bandColour, sizeof (frame.bandColour));
+                out += sizeof (float) + sizeof (frame.bandColour);
             }
             if (numSources > 0 && frame.eq)
             {

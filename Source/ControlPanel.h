@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "ColourScaleEditor.h"
 
 // Where the Field EQ's curve is drawn: distance from the instance's
 // position runs to the right, pitch upward, and the line says which pitch
@@ -118,6 +119,7 @@ public:
         layerBox.setTooltip ("Stacking order among the instances on the same stream. 1 is the bottom layer");
         divideButton.setTooltip ("On a wall: split one picture over the cells of all the streams switched on here, instead of repeating it in each");
         blendLabel.setText ("Blend", juce::dontSendNotification);
+        coloursLabel.setText ("Colours", juce::dontSendNotification);
         layerLabel.setText ("Layer", juce::dontSendNotification);
         streamLabel.setText ("Streams", juce::dontSendNotification);
         streamStatus.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.55f));
@@ -136,7 +138,7 @@ public:
 
         for (juce::Component* c : std::initializer_list<juce::Component*> { &modeBox, &colourBox, &layoutBox, &guidesButton, &testButton,
                                                                             &swingLabel, &swingMotionBox, &swingSyncButton,
-                                                                            &planeLabel, &planeBox, &sumButton, &fieldLockButton, &fieldVolumeButton, &fieldShapeBox, &fieldEqButton, &fieldCurve,
+                                                                            &planeLabel, &planeBox, &sumButton, &fieldLockButton, &fieldVolumeButton, &fieldShapeBox, &fieldEqButton, &fieldCurve, &coloursLabel, &colourScale,
                                                                             &blendLabel, &blendBox, &layerLabel, &layerBox,
                                                                             &streamLabel, &divideButton, &streamStatus })
             addAndMakeVisible (c);
@@ -173,7 +175,6 @@ public:
         setUp (posX, "posx", "Position X", "");
         setUp (posY, "posy", "Position Y", "");
         setUp (posZ, "posz", "Position Z", "");
-        setUp (fieldHue, "fieldhue", "Field hue", " deg");
         setUp (fieldFade, "fieldfade", "Field fade", " %");
         setUp (fieldSpeed, "fieldspeed", "Field speed", " %");
         setUp (fieldDensity, "fielddensity", "Density", " %");
@@ -196,7 +197,6 @@ public:
             ls->slider.setTooltip ("Moves the centre of this instance's plane in the scene: x to the right, y up, z towards you. 1 is the edge of the picture's square. In Field mode it is the centre of this instance's field");
             ls->slider.setDoubleClickReturnValue (true, 0.0);
         }
-        fieldHue.slider.setTooltip ("Field mode: the colour of the field where it is positive. Where it is negative it gets the complementary colour");
         fieldFade.slider.setTooltip ("Field mode: how fast this instance's field fades with distance from its position. At 100 % it is gone at the edge of the picture's square");
         for (auto* ls : { &planeRotX, &planeRotY, &planeRotZ })
             ls->slider.setTooltip ("Turns this instance's plane about the scene's axis, on top of the Plane chosen");
@@ -224,11 +224,24 @@ public:
         guidesAttachment = std::make_unique<ButtonAttachment> (apvts, "guides", guidesButton);
         testAttachment = std::make_unique<ButtonAttachment> (apvts, "test", testButton);
 
+        modeBox.onChange = [this] { updateVisibility(); };
+        fieldEqButton.onClick = [this] { updateVisibility(); };
+        updateVisibility();
+
         startTimerHz (8);
         timerCallback();
     }
 
-    static constexpr int preferredHeight = 496;
+    // The panel only shows what the mode in use has a use for, so its
+    // height goes by the mode. onHeightChanged says when that changed.
+    static constexpr int rowHeight = 30, curveHeight = 60;
+
+    int getPreferredHeight() const
+    {
+        return 12 + rowHeight * (9 + (showsSwing ? 1 : 0) + (showsField ? 4 : 0)) + (showsCurve ? curveHeight : 0);
+    }
+
+    std::function<void()> onHeightChanged;
 
     void paint (juce::Graphics& g) override
     {
@@ -246,10 +259,32 @@ public:
     void resized() override
     {
         auto controls = getLocalBounds().reduced (10, 6);
+        auto nextRow = [&controls] { return controls.removeFromTop (rowHeight).reduced (0, 3); };
 
-        auto row1 = controls.removeFromTop (30).reduced (0, 3);
+        // Sliders in the thirds of a row, from the left.
+        auto placeRow = [] (juce::Rectangle<int> row, std::initializer_list<LabelledSlider*> items)
+        {
+            const int third = row.getWidth() / 3;
+            for (auto* ls : items)
+            {
+                auto cell = row.removeFromLeft (third);
+                ls->label.setBounds (cell.removeFromLeft (76));
+                ls->slider.setBounds (cell.reduced (4, 0));
+            }
+        };
+        auto thirdOf = [] (juce::Rectangle<int> row, int index)
+        {
+            const int third = row.getWidth() / 3;
+            return row.withX (row.getX() + index * third).withWidth (third);
+        };
+        auto fromSecondThird = [] (juce::Rectangle<int> row) { return row.withTrimmedLeft (row.getWidth() / 3).withWidth (row.getWidth()); };
+
+        // Row 1: what is drawn, and the buttons.
+        auto row1 = nextRow();
         for (auto* box : { &modeBox, &colourBox, &layoutBox })
         {
+            if (! box->isVisible())
+                continue;
             box->setBounds (row1.removeFromLeft (140));
             row1.removeFromLeft (8);
         }
@@ -261,80 +296,85 @@ public:
         testButton.setBounds (row1.removeFromRight (100));
         guidesButton.setBounds (row1.removeFromRight (80));
 
-        auto placeRow = [] (juce::Rectangle<int> row, std::initializer_list<LabelledSlider*> items)
-        {
-            const int third = row.getWidth() / 3;
-            for (auto* ls : items)
-            {
-                auto cell = row.removeFromLeft (third);
-                ls->label.setBounds (cell.removeFromLeft (76));
-                ls->slider.setBounds (cell.reduced (4, 0));
-            }
-        };
-        placeRow (controls.removeFromTop (30).reduced (0, 3), { &window, &delay, &afterglow });
-        placeRow (controls.removeFromTop (30).reduced (0, 3), { &brightness, &contrast, &blur });
+        // Row 2: the signal. Row 3: the image.
+        if (delay.slider.isVisible())
+            placeRow (nextRow(), { &window, &delay, &afterglow });
+        else
+            placeRow (nextRow(), { &window, &afterglow });
+        placeRow (nextRow(), { &brightness, &contrast, &blur });
 
         // Row 4: band limits, then how this instance layers in the third cell.
-        auto row4 = controls.removeFromTop (30).reduced (0, 3);
-        auto layering = row4.removeFromRight (row4.getWidth() / 3);
-        placeRow (row4.withWidth (row4.getWidth() * 3 / 2), { &lowCut, &highCut });
+        auto row4 = nextRow();
+        placeRow (row4, { &lowCut, &highCut });
+        auto layering = thirdOf (row4, 2);
         blendLabel.setBounds (layering.removeFromLeft (76));
         layerBox.setBounds (layering.removeFromRight (64).reduced (4, 0));
         layerLabel.setBounds (layering.removeFromRight (46));
         blendBox.setBounds (layering.reduced (4, 0));
 
-        // Row 5: the axis of the Swing mode.
-        auto row5swing = controls.removeFromTop (30).reduced (0, 3);
-        const int third = row5swing.getWidth() / 3;
-        auto motion = row5swing.removeFromLeft (third);
-        swingLabel.setBounds (motion.removeFromLeft (76));
-        swingMotionBox.setBounds (motion.reduced (4, 0));
-        auto rate = row5swing.removeFromLeft (third);
-        swingRate.label.setBounds (rate.removeFromLeft (76));
-        swingRate.slider.setBounds (rate.reduced (4, 0));
-        swingSyncButton.setBounds (row5swing.removeFromLeft (150).reduced (4, 0));
+        // The axis of the Swing mode.
+        if (showsSwing)
+        {
+            auto row = nextRow();
+            auto motion = thirdOf (row, 0);
+            swingLabel.setBounds (motion.removeFromLeft (76));
+            swingMotionBox.setBounds (motion.reduced (4, 0));
+            placeRow (fromSecondThird (row), { &swingRate });
+            swingSyncButton.setBounds (thirdOf (row, 2).removeFromLeft (150).reduced (4, 0));
+        }
 
-        // Rows 6 and 7: this instance's plane in the 3D scene, and the camera.
-        auto row6 = controls.removeFromTop (30).reduced (0, 3);
-        auto plane = row6.removeFromLeft (row6.getWidth() / 3);
+        // This instance's plane in the 3D scene, what is summed with it, and the scene's colours.
+        auto planeRow = nextRow();
+        auto plane = thirdOf (planeRow, 0);
         planeLabel.setBounds (plane.removeFromLeft (76));
         planeBox.setBounds (plane.reduced (4, 0));
-        placeRow (row6.withWidth (row6.getWidth() * 3 / 2), { &planeRotX, &planeRotY });
-        auto row7 = controls.removeFromTop (30).reduced (0, 3);
-        placeRow (row7, { &planeRotZ });
-        sumButton.setBounds (row7.withTrimmedLeft (row7.getWidth() / 3).removeFromLeft (150).reduced (4, 0));
+        placeRow (fromSecondThird (planeRow), { &planeRotX, &planeRotY });
 
+        auto turnRow = nextRow();
+        placeRow (turnRow, { &planeRotZ });
+        sumButton.setBounds (thirdOf (turnRow, 1).removeFromLeft (150).reduced (4, 0));
+        auto colours = thirdOf (turnRow, 2);
+        coloursLabel.setBounds (colours.removeFromLeft (76));
+        colourScale.setBounds (colours.withTrimmedRight (4));
 
-        // Row 8: where the plane's centre is. Row 9: the Field mode.
-        placeRow (controls.removeFromTop (30).reduced (0, 3), { &posX, &posY, &posZ });
-        placeRow (controls.removeFromTop (30).reduced (0, 3), { &fieldHue, &fieldFade, &fieldSpeed });
-        auto row10 = controls.removeFromTop (30).reduced (0, 3);
-        placeRow (row10, { &fieldDensity });
-        auto shape = row10.withTrimmedLeft (row10.getWidth() / 3).withWidth (row10.getWidth() / 3);
-        fieldVolumeButton.setBounds (shape.removeFromLeft (90).reduced (4, 0));
-        fieldShapeBox.setBounds (shape.removeFromLeft (120).reduced (4, 0));
-        fieldLockButton.setBounds (row10.withTrimmedLeft (row10.getWidth() * 2 / 3).removeFromLeft (150).reduced (4, 0));
+        // Where the plane's centre is.
+        placeRow (nextRow(), { &posX, &posY, &posZ });
 
-        placeRow (controls.removeFromTop (30).reduced (0, 3), { &fieldFocus, &fieldAperture });
+        // The Field mode.
+        if (showsField)
+        {
+            auto fadeRow = nextRow();
+            placeRow (fadeRow, { &fieldFade, &fieldSpeed });
+            fieldLockButton.setBounds (thirdOf (fadeRow, 2).removeFromLeft (150).reduced (4, 0));
 
-        // Then the Field EQ, and its curve.
-        auto row11 = controls.removeFromTop (30).reduced (0, 3);
-        fieldEqButton.setBounds (row11.withWidth (row11.getWidth() / 3).reduced (4, 0));
-        placeRow (row11.withTrimmedLeft (row11.getWidth() / 3).withWidth (row11.getWidth()), { &fieldEqWidth });
-        fieldCurve.setBounds (controls.removeFromTop (60).reduced (4, 3));
+            auto volumeRow = nextRow();
+            auto shape = thirdOf (volumeRow, 0);
+            fieldShapeBox.setBounds (shape.removeFromLeft (120).reduced (4, 0));
+            fieldVolumeButton.setBounds (shape.removeFromLeft (90).reduced (4, 0));
+            placeRow (fromSecondThird (volumeRow), { &fieldDensity });
 
-        // Row 10: the camera, which turns the whole drawing.
-        placeRow (controls.removeFromTop (30).reduced (0, 3), { &viewYaw, &viewPitch, &viewRoll });
+            placeRow (nextRow(), { &fieldFocus, &fieldAperture });
 
-        // Row 11: the streams this instance is sent to.
-        auto row5 = controls.removeFromTop (30).reduced (0, 3);
-        streamLabel.setBounds (row5.removeFromLeft (76));
-        row5.removeFromLeft (4);
+            // Then the Field EQ, and its curve.
+            auto eqRow = nextRow();
+            fieldEqButton.setBounds (thirdOf (eqRow, 0).reduced (4, 0));
+            placeRow (fromSecondThird (eqRow), { &fieldEqWidth });
+            if (showsCurve)
+                fieldCurve.setBounds (controls.removeFromTop (curveHeight).reduced (4, 3));
+        }
+
+        // The camera, which turns the whole drawing.
+        placeRow (nextRow(), { &viewYaw, &viewPitch, &viewRoll });
+
+        // The streams this instance is sent to.
+        auto streams = nextRow();
+        streamLabel.setBounds (streams.removeFromLeft (76));
+        streams.removeFromLeft (4);
         for (auto& button : streamButtons)
-            button.setBounds (row5.removeFromLeft (30));
-        row5.removeFromLeft (12);
-        divideButton.setBounds (row5.removeFromLeft (80));
-        streamStatus.setBounds (row5.reduced (4, 0));
+            button.setBounds (streams.removeFromLeft (30));
+        streams.removeFromLeft (12);
+        divideButton.setBounds (streams.removeFromLeft (80));
+        streamStatus.setBounds (streams.reduced (4, 0));
     }
 
 private:
@@ -349,28 +389,53 @@ private:
         std::unique_ptr<SliderAttachment> attachment;
     };
 
+    // Shows the controls the mode in use has a use for, and no others:
+    // Delay belongs to Delay embed, the swing controls to Swing, the field
+    // controls to Field (its curve only with the EQ on), and Colour and
+    // Layout to the modes that draw curves.
+    void updateVisibility()
+    {
+        const auto mode = (scope::Mode) juce::jlimit (0, 4, modeBox.getSelectedId() - 1);
+        const bool swing = mode == scope::Mode::swing, field = mode == scope::Mode::field;
+        const bool curve = field && fieldEqButton.getToggleState();
+        const int state = (int) mode + (curve ? 16 : 0);
+        if (state == shownState)
+            return;
+        shownState = state;
+        showsSwing = swing;
+        showsField = field;
+        showsCurve = curve;
+
+        auto show = [] (bool visible, std::initializer_list<juce::Component*> components)
+        {
+            for (auto* c : components)
+                c->setVisible (visible);
+        };
+        show (mode == scope::Mode::delayEmbed, { &delay.label, &delay.slider });
+        show (! field, { &colourBox, &layoutBox });
+        show (swing, { &swingLabel, &swingMotionBox, &swingRate.label, &swingRate.slider, &swingSyncButton });
+        show (field, { &fieldFade.label, &fieldFade.slider, &fieldSpeed.label, &fieldSpeed.slider, &fieldLockButton,
+                       &fieldShapeBox, &fieldVolumeButton, &fieldDensity.label, &fieldDensity.slider,
+                       &fieldFocus.label, &fieldFocus.slider, &fieldAperture.label, &fieldAperture.slider,
+                       &fieldEqButton, &fieldEqWidth.label, &fieldEqWidth.slider });
+        show (curve, { &fieldCurve });
+
+        resized();
+        if (onHeightChanged)
+            onHeightChanged();
+    }
+
     void timerCallback() override
     {
-        // The swing controls only do something in Swing mode, the rate only when it is free.
-        const bool swing = modeBox.getSelectedId() == (int) scope::Mode::swing + 1;
-        swingMotionBox.setEnabled (swing);
-        swingSyncButton.setEnabled (swing);
-        swingRate.slider.setEnabled (swing && ! swingSyncButton.getToggleState());
+        updateVisibility();   // the host may have changed the mode
 
-        // Likewise the field controls in Field mode, where Delay and Colour do nothing.
-        const bool field = modeBox.getSelectedId() == (int) scope::Mode::field + 1;
-        fieldHue.slider.setEnabled (field);
-        fieldFade.slider.setEnabled (field);
-        fieldLockButton.setEnabled (field);
-        fieldSpeed.slider.setEnabled (field && fieldLockButton.getToggleState());
-        fieldVolumeButton.setEnabled (field);
-        fieldShapeBox.setEnabled (field);
-        fieldEqButton.setEnabled (field);
-        fieldEqWidth.slider.setEnabled (field && fieldEqButton.getToggleState());
-        fieldCurve.setEnabled (field && fieldEqButton.getToggleState());
-        fieldDensity.slider.setEnabled (field && fieldVolumeButton.getToggleState());
-        fieldAperture.slider.setEnabled (field && fieldVolumeButton.getToggleState());
-        fieldFocus.slider.setEnabled (field && fieldVolumeButton.getToggleState() && fieldAperture.slider.getValue() > 0.0);
+        // Of what is shown, some only does something with a switch on.
+        swingRate.slider.setEnabled (! swingSyncButton.getToggleState());
+        fieldSpeed.slider.setEnabled (fieldLockButton.getToggleState());
+        fieldEqWidth.slider.setEnabled (fieldEqButton.getToggleState());
+        fieldDensity.slider.setEnabled (fieldVolumeButton.getToggleState());
+        fieldAperture.slider.setEnabled (fieldVolumeButton.getToggleState());
+        fieldFocus.slider.setEnabled (fieldVolumeButton.getToggleState() && fieldAperture.slider.getValue() > 0.0);
 
         // On a mono track there is one picture, whatever the layout says.
         const bool mono = processor.source.mono.load();
@@ -421,20 +486,21 @@ private:
     CircleScopeProcessor& processor;
     juce::Component* trailingComponent;
     const bool isTranslucent;
+    int shownState = -1;                             // the mode, and whether the EQ's curve shows
+    bool showsSwing = false, showsField = false, showsCurve = false;
 
     juce::ComboBox modeBox, colourBox, layoutBox, blendBox, layerBox, swingMotionBox, planeBox, fieldShapeBox;
     juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" }, divideButton { "Divide" },
                        swingSyncButton { "Once per window" }, fieldLockButton { "Lock to wave" }, fieldVolumeButton { "Volume" }, fieldEqButton { "EQ by distance" };
     FieldCurveEditor fieldCurve { processor.source };
+    ColourScaleEditor colourScale;                   // the scene's, not this instance's
     juce::TextButton sumButton { "Sum with..." };
-    juce::Label blendLabel, layerLabel, streamLabel, streamStatus, swingLabel, planeLabel;
+    juce::Label blendLabel, layerLabel, streamLabel, streamStatus, swingLabel, planeLabel, coloursLabel;
     std::array<juce::TextButton, net::maxStreams> streamButtons;
 
-    // Row 2: signal controls. Row 3: image controls. Row 4: band limits, layering. Row 5: swing.
-    // Rows 6 and 7: plane, sum. Row 8: position. Rows 9 to 13: field. Row 14: camera. Row 15: streams.
     LabelledSlider window, delay, afterglow, brightness, contrast, blur, lowCut, highCut, swingRate,
                    planeRotX, planeRotY, planeRotZ, viewYaw, viewPitch, viewRoll,
-                   posX, posY, posZ, fieldHue, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture;
+                   posX, posY, posZ, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture;
 
     std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, blendAttachment, layerAttachment, swingMotionAttachment, planeAttachment, fieldShapeAttachment;
     std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment, swingSyncAttachment, fieldLockAttachment, fieldVolumeAttachment, fieldEqAttachment;

@@ -21,10 +21,9 @@
 //
 // Position X / Y / Z move the centre of the instance's plane in the scene.
 //
-// Field hue, Field fade, Field lock and Field speed belong to the Field
-// mode (see CurveAnalyser.h): the colour of the field where it is positive
-// (where it is negative it gets the complement), how fast it fades with
-// distance from the instance's position, whether the picture is locked to
+// Field fade, Field lock and Field speed belong to the Field mode (see
+// CurveAnalyser.h; its colours are the scene's, see ColourScale.h): how
+// fast it fades with distance from the instance's position, whether the picture is locked to
 // the wave, and how fast the locked picture moves on: a slow motion, in
 // percent of real time. Field volume shows the field as a volume in space,
 // looked through from the camera, instead of only where the planes cut it;
@@ -47,7 +46,7 @@ namespace scope
         pBrightness, pContrast, pBlur, pLowCut, pHighCut, pGuides, pTest,
         pBlend, pLayer, pDivide, pSwingMotion, pSwingRate, pSwingSync,
         pPlane, pPlaneRotX, pPlaneRotY, pPlaneRotZ, pViewYaw, pViewPitch, pViewRoll,
-        pPosX, pPosY, pPosZ, pFieldHue, pFieldFade, pFieldLock, pFieldSpeed, pFieldVolume, pFieldDensity, pFieldShape, pFieldEq, pFieldEqWidth, pFieldFocus, pFieldAperture,
+        pPosX, pPosY, pPosZ, pFieldFade, pFieldLock, pFieldSpeed, pFieldVolume, pFieldDensity, pFieldShape, pFieldEq, pFieldEqWidth, pFieldFocus, pFieldAperture,
         pCamX, pCamY, pCamZ,
         numParams
     };
@@ -84,7 +83,7 @@ namespace scope
     enum class Plane { xy = 0, yz, xz };
     enum class Blend { add = 0, screen, normal, lighten, multiply, darken, overlay, difference, exclusion, subtract };
 
-    // CCs 102..119, 85..90, 20..31, 14, 15, 3 and 9 are undefined in the MIDI spec, so they collide with nothing.
+    // CCs 102..119, 85..90, 20..31, 14, 15, 3 and 9 are undefined in the MIDI spec, so they collide with nothing (25 is free again).
     inline constexpr ParamInfo paramTable[numParams] = {
         { "mode",       "Mode",       ParamKind::choice, 0.0f,  4.0f,     1.0f,  1.0f,  0.0f,     "",   "Quadrature|Delay embed|Swing|Axis|Field", 102 },
         { "window",     "Window",     ParamKind::real,   5.0f,  300.0f,   0.1f,  0.5f,  60.0f,    "ms", "",                                103 },
@@ -115,7 +114,6 @@ namespace scope
         { "posx",       "Position X", ParamKind::real,   -2.0f,   2.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                22 },
         { "posy",       "Position Y", ParamKind::real,   -2.0f,   2.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                23 },
         { "posz",       "Position Z", ParamKind::real,   -2.0f,   2.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                24 },
-        { "fieldhue",   "Field hue",  ParamKind::real,    0.0f, 360.0f,   0.1f,  1.0f,  28.0f,    "deg", "",                               25 },
         { "fieldfade",  "Field fade", ParamKind::real,    0.0f, 100.0f,   0.1f,  1.0f,  45.0f,    "%",  "",                                26 },
         { "fieldlock",  "Field lock", ParamKind::toggle,  0.0f,   1.0f,   1.0f,  1.0f,  1.0f,     "",   "",                                27 },
         { "fieldspeed", "Field speed", ParamKind::real,   0.0f, 100.0f,   0.01f, 0.3f,  1.0f,     "%",  "",                                28 },

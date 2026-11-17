@@ -46,12 +46,12 @@ namespace net
     constexpr int maxStreams = 16;           // stream ids are 1..16; 0 means off
     constexpr const char* nodeAppId = "circlescope-node";
 
-    constexpr juce::uint32 paramMagic = 0x32505343;   // "CSP2"
-    constexpr juce::uint32 frameMagic = 0x33465343;   // "CSF3"
+    constexpr juce::uint32 paramMagic = 0x33505343;   // "CSP3"
+    constexpr juce::uint32 frameMagic = 0x34465343;   // "CSF4"
 
     constexpr int maxPointsPerChunk = 140;   // keeps a packet under one Ethernet MTU
     constexpr int maxSamplesPerChunk = 700;  // of a wave, likewise
-    constexpr int maxChunks = 255;           // of one frame: eight sources with the EQ on need about 190
+    constexpr int maxChunks = 255;           // of one frame: a field of eight sources needs about 190
 
     struct ParamHeader
     {
@@ -73,9 +73,11 @@ namespace net
     };
 
     // Then numGuides WirePlanes, then numSources WireSources and, if there
-    // are sources, one float: the reach of their waves. With the EQ on,
-    // then its width (a float) and its curve (scope::fieldCurvePoints
-    // floats), and every source has scope::fieldBands times the samples.
+    // are sources, one float, the reach of their waves, and the colours of
+    // the bands of pitch (scope::fieldBands times r, g, b as floats). With
+    // the EQ on, then its width (a float) and its curve
+    // (scope::fieldCurvePoints floats). Every source has scope::fieldBands
+    // times scope::fieldSamples samples.
     struct FrameHead
     {
         juce::uint8 layout;            // scope::Layout
@@ -96,7 +98,7 @@ namespace net
     struct WireSource
     {
         WirePlane where;
-        float colour[3];
+        float level[8];                // of each band of pitch (scope::fieldBands)
         float fade;
     };
 
@@ -108,7 +110,7 @@ namespace net
     };
 
     static_assert (sizeof (ParamHeader) == 8 && sizeof (FrameHeader) == 20 && sizeof (FrameHead) == 16 && sizeof (WirePoint) == 10
-                   && sizeof (WirePlane) == 48 && sizeof (WireSource) == 64,
+                   && sizeof (WirePlane) == 48 && sizeof (WireSource) == 84,
                    "wire structs must not be padded");
 
     constexpr int maxPacketBytes = 1472;

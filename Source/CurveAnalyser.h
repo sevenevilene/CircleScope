@@ -7,6 +7,7 @@
 #include <optional>
 #include <vector>
 #include "ScopeCurve.h"
+#include "ColourScale.h"
 
 // Turns audio into the drawing: reads the samples of an instance, does the
 // FFT work (analytic signal, band limits), and builds each frame's curve by
@@ -28,8 +29,8 @@
 //                up and down (y) on the XY plane, in depth (z) on YZ, left
 //                and right (x) on XZ.
 //   Field:       not a curve but a field of standing waves. Space is filled
-//                with dots that stay where they are and swing between a
-//                colour and its complement, through dark: every tone in the
+//                with dots that stay where they are and swing between the
+//                colour of their pitch and its opposite hue (ColourScale.h): every tone in the
 //                sound makes a grid of them, neighbours opposite, as far
 //                apart as the tone's wavelength (the Window is the scale:
 //                one Window of sound to a plane unit). So a low note is
@@ -53,10 +54,11 @@
 //                a distance d from it you find the sound of d Windows ago,
 //                and a tone makes rings (shells, in space). Locked, they
 //                move outward slowly.
-//                With Field EQ on, the sound is handed on split into bands
-//                of pitch, and the scope lets through at every distance
-//                from the instance only those about the pitch the
-//                instance's curve gives for that distance.
+//                The sound is handed on split into bands of pitch, so
+//                the scope can colour each by its pitch. With Field EQ on
+//                it lets through at every distance from the instance only
+//                the bands about the pitch the instance's curve gives for
+//                that distance.
 // Mid / side layout: a goniometer. Vertical = mid (L+R), horizontal = side
 // (R-L). Mono layout: one trajectory, of the two channels' average; a mono
 // source is always drawn this way.
@@ -105,7 +107,7 @@ private:
         scope::Mat3 plane;         // plane to scene
         bool axisAlongU;           // Axis mode: the point moves along the plane's u, not its v
         scope::Vec3 at;            // the plane's centre in the scene
-        float fieldHue, fieldFade; // Field mode: degrees, and amplitude lost per plane unit
+        float fieldFade;           // Field mode: amplitude lost per plane unit
         bool fieldLock;
         float fieldSpeed;          // of the locked picture, as a fraction of real time
         bool fieldRings;
@@ -162,7 +164,7 @@ private:
     void addCurve (scope::Frame::Panel&, Curve, const Range&, std::optional<juce::Colour> colourOverride);
 
     static Settings readSettings (const ScopeSource&);
-    static juce::Colour colourForFrequency (double hz);
+    juce::Colour colourForFrequency (double hz) const;
 
     const ScopeSource& source;
     scope::CurveFeed& feed;
@@ -172,11 +174,12 @@ private:
     scope::FramePool pool;
     std::vector<std::unique_ptr<Signal>> signals;    // [0] is the instance's own
     std::vector<std::complex<float>> timeScratch, freqScratch;
-    std::vector<std::complex<float>> bandFreq, bandTime;   // Field EQ: one band of a source's sound
+    std::vector<std::complex<float>> bandFreq, bandTime;   // Field mode: one band of a source's sound
     std::vector<float> wave;                         // Field mode: the sound a source's samples are taken from
     std::vector<Point3> points;                      // scratch: the curve being summed
     float sumGain[4] { 1.0f, 1.0f, 1.0f, 1.0f };     // of a sum of several planes, per Curve
     float correlation = 1.0f;
+    scope::ColourScale colours;                      // the scene's, as it was when this frame began
     double lastFrameMs = 0.0;
     double fieldCreep = 0.0, lastFieldMs = 0.0;      // Field mode: how far the locked picture has moved on, in samples
 

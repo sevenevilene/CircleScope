@@ -59,21 +59,22 @@ namespace scope
     }
 
     // One source of a field (the Field mode): where it is, the plane whose
-    // axes its dots line up with, its colour, and its sound about one
+    // axes its dots line up with, and its sound about one
     // moment, the last sample as far from it as the frame's reach at one
     // Window to a plane unit. For dots (standing waves) the sound is
     // mirrored: samples[j] is the average of the sound j steps after the
     // moment and j steps before it. For rings it is the sound itself,
     // going back: samples[j] is the sound j steps before the moment.
-    // With the frame's EQ on there are fieldBands such runs, one after the
-    // other: the sound split into bands of pitch, lowest first.
+    // There are fieldBands such runs, one after the other: the sound split
+    // into bands of pitch, lowest first, so each can have its own colour.
+    // Every band fills -1..1 by itself, and level says how strong it is.
     struct FieldSource
     {
         Mat3 plane;
         Vec3 at;
-        float r = 1.0f, g = 0.5f, b = 0.0f;     // of +1; -1 gets the complement
         float fade = 0.0f;                       // amplitude lost per plane unit of distance from it
-        std::vector<float> samples;              // fieldSamples of them, -1..1; times fieldBands with the EQ on
+        float level[fieldBands] {};              // what each band's samples are to be multiplied by
+        std::vector<float> samples;              // fieldSamples of them, -1..1, for each of the fieldBands
     };
 
     // One frame of the drawing: curves, or a wave field.
@@ -99,6 +100,7 @@ namespace scope
         bool rings = false;                      // the sound spreads from the sources as rings; else it stands, as dots
         FieldSource sources[maxFieldSources];
         float reach = 1.0f;                      // the distance the samples cover, in plane units
+        float bandColour[fieldBands][3] {};      // each band's colour on the scene's scale (ColourScale.h)
         bool eq = false;                         // only a range of pitch at each distance from a source:
         float eqWidth = 2.0f;                    // this many octaves wide,
         float curve[fieldCurvePoints] {};        // about the pitch the curve gives for the distance

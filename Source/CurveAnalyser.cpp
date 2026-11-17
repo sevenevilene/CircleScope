@@ -19,11 +19,12 @@ CurveAnalyser::~CurveAnalyser()
     stopThread (2000);
 }
 
-juce::Colour CurveAnalyser::colourForFrequency (double hz)
+// The colour of a pitch on the scene's scale.
+juce::Colour CurveAnalyser::colourForFrequency (double hz) const
 {
-    // 20 Hz = red ... 20 kHz = blue, log spaced.
-    const double u = juce::jlimit (0.0, 1.0, std::log (juce::jmax (hz, 1.0) / 20.0) / std::log (1000.0));
-    return juce::Colour::fromHSV (0.66f * (float) u, 0.8f, 1.0f, 1.0f);
+    float rgb[3];
+    colours.colourAt (scope::ColourScale::placeOf (hz), rgb);
+    return juce::Colour::fromFloatRGBA (rgb[0], rgb[1], rgb[2], 1.0f);
 }
 
 CurveAnalyser::Settings CurveAnalyser::readSettings (const ScopeSource& src)
@@ -50,7 +51,6 @@ CurveAnalyser::Settings CurveAnalyser::readSettings (const ScopeSource& src)
              planeOrientation (plane, get (pPlaneRotX), get (pPlaneRotY), get (pPlaneRotZ)),
              plane != Plane::xy,
              { get (pPosX), get (pPosY), get (pPosZ) },
-             get (pFieldHue),
              get (pFieldFade) * 0.01f,
              get (pFieldLock) > 0.5f,
              get (pFieldSpeed) * 0.01f,
@@ -244,6 +244,7 @@ void CurveAnalyser::run()
 void CurveAnalyser::makeFrame()
 {
     updateSignals();
+    colours = scope::SceneColours::get().read();
     for (auto& sig : signals)
         sig->settings = readSettings (sig->source);
     readSamples();
@@ -384,7 +385,9 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
     for (int i = 0; i < scope::fieldCurvePoints; ++i)
         frame.curve[i] = juce::jlimit (0.0f, 1.0f, lead.source.fieldCurve[i].load());
 
-    const int numBands = s.fieldEq ? scope::fieldBands : 1;
+    for (int band = 0; band < scope::fieldBands; ++band)
+        colours.colourAt (scope::ColourScale::placeOfBand (band), frame.bandColour[band]);
+
     frame.numSources = (int) juce::jmin (signals.size(), (size_t) scope::maxFieldSources);
 
     for (int k = 0; k < frame.numSources; ++k)
@@ -400,28 +403,20 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
         const float target = 1.0f / juce::jmax (peak, 0.01f);
         sig.fieldGain = target < sig.fieldGain ? target : sig.fieldGain + (target - sig.fieldGain) * 0.05f;
 
-        const auto colour = juce::Colour::fromHSV (set.fieldHue / 360.0f, 1.0f, 1.0f, 1.0f);
         out.plane = set.plane;
         out.at = set.at;
-        out.r = colour.getFloatRed();
-        out.g = colour.getFloatGreen();
-        out.b = colour.getFloatBlue();
         out.fade = set.fieldFade;
 
-        // With the EQ, the sound once per band of pitch: its spectrum,
-        // and of that each band in turn, back as sound. The bands overlap
-        // so that together they are the whole sound again.
-        if (s.fieldEq)
-        {
-            for (int i = 0; i < blockSize; ++i)
-                timeScratch[(size_t) i] = { mono (sig, i), 0.0f };
-            fft.perform (timeScratch.data(), freqScratch.data(), false);
-        }
+        // The sound once per band of pitch: its spectrum, and of that
+        // each band in turn, back as sound. The bands overlap so that
+        // together they are the whole sound again.
+        for (int i = 0; i < blockSize; ++i)
+            timeScratch[(size_t) i] = { mono (sig, i), 0.0f };
+        fft.perform (timeScratch.data(), freqScratch.data(), false);
 
-        out.samples.resize ((size_t) (scope::fieldSamples * numBands));
-        for (int band = 0; band < numBands; ++band)
+        out.samples.resize ((size_t) (scope::fieldSamples * scope::fieldBands));
+        for (int band = 0; band < scope::fieldBands; ++band)
         {
-            if (s.fieldEq)
             {
                 for (int bin = 0; bin <= blockSize / 2; ++bin)
                 {
@@ -441,20 +436,25 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
                 for (int i = 0; i < blockSize; ++i)
                     wave[(size_t) i] = bandTime[(size_t) i].real();
             }
-            else
-            {
-                for (int i = 0; i < blockSize; ++i)
-                    wave[(size_t) i] = mono (sig, i);
-            }
 
+            // Each band is handed on filling -1..1, with how strong it
+            // really is beside it: where it is on the colour map goes by
+            // its own swing, not by how loud it is next to the others.
             auto* to = out.samples.data() + (size_t) (band * scope::fieldSamples);
+            float bandPeak = 0.0f;
             for (int j = 0; j < scope::fieldSamples; ++j)
             {
                 const int away = juce::roundToInt ((float) j * step);
                 const float v = rings ? wave[(size_t) (moment - away)]
                                       : 0.5f * (wave[(size_t) (moment + away)] + wave[(size_t) (moment - away)]);
-                to[j] = juce::jlimit (-1.0f, 1.0f, v * sig.fieldGain);
+                to[j] = v * sig.fieldGain;
+                bandPeak = juce::jmax (bandPeak, std::abs (to[j]));
             }
+
+            const bool heard = bandPeak > 1.0e-4f;
+            out.level[band] = heard ? juce::jmin (bandPeak, 4.0f) : 0.0f;
+            for (int j = 0; j < scope::fieldSamples; ++j)
+                to[j] = heard ? to[j] / bandPeak : 0.0f;
         }
     }
 }
