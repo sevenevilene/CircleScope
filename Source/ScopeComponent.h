@@ -95,6 +95,7 @@ private:
         float fieldDensity;        // and how much a plane unit of full field hides what is behind it
         float fieldFocus;          // the depth that is sharp, towards the viewer from the centre of the scene
         float fieldAperture;       // 0..1: how much the rest blurs; 0 is everything sharp
+        float alpha;               // 0..1: the alpha of the colours, in every mode
     };
 
     // Where one panel lands in this component's framebuffer: a transform from

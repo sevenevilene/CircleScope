@@ -142,15 +142,17 @@ namespace
                            + wave (q.x - q.y + q.z, row) + wave (q.y + q.z - q.x, row));
         }
 
-        vec3 tint (vec3 c, float x)
+        uniform float colourAlpha;    // the alpha every colour of the scale has
+
+        vec4 tint (vec4 c, float x)
         {
-            vec3 opposite = vec3 (max (c.r, max (c.g, c.b)) + min (c.r, min (c.g, c.b))) - c;
-            return mix (opposite, c, 0.5 + 0.5 * clamp (x, -1.0, 1.0));
+            vec3 opposite = vec3 (max (c.r, max (c.g, c.b)) + min (c.r, min (c.g, c.b))) - c.rgb;
+            return vec4 (mix (opposite, c.rgb, 0.5 + 0.5 * clamp (x, -1.0, 1.0)), c.a);
         }
 
         // The field of source k at a point, given in the source's own axes:
         // its amplitude, and its colour there.
-        float field (vec3 q, int k, out vec3 colour)
+        float field (vec3 q, int k, out vec4 colour)
         {
             float pitch = 0.0;
             if (eq > 0.5)
@@ -161,7 +163,7 @@ namespace
             }
 
             float a = 0.0, weight = 0.0;
-            vec3 sum = vec3 (0.0);
+            vec4 sum = vec4 (0.0);
             for (int b = 0; b < 8; ++b)
             {
                 float lets = bandLevel[k * 8 + b];
@@ -173,7 +175,7 @@ namespace
                 {
                     float x = shape (q, float (k * 8 + b));
                     a += lets * x;
-                    sum += lets * abs (x) * tint (bandColour[b], x);
+                    sum += lets * abs (x) * tint (vec4 (bandColour[b], colourAlpha), x);
                     weight += lets * abs (x);
                 }
             }
@@ -194,18 +196,22 @@ namespace
 
         void main()
         {
-            vec3 light = vec3 (0.0);
+            // The alpha of the light is that of its colours, averaged by how
+            // strong each source is here.
+            vec4 light = vec4 (0.0);
+            float weight = 0.0;
             for (int k = 0; k < 8; ++k)
             {
                 if (k >= count)
                     break;
 
                 vec3 q = sourceAxes[k] * (where - sourceAt[k]);
-                vec3 colour;
+                vec4 colour;
                 float a = field (q, k, colour) * max (0.0, 1.0 - sourceFade[k] * length (q));
-                light += abs (a) * colour;
+                light += abs (a) * vec4 (colour.rgb, colour.a);
+                weight += abs (a);
             }
-            gl_FragColor = vec4 (light, alphaScale);
+            gl_FragColor = vec4 (light.rgb, alphaScale * light.a / max (weight, 1.0e-6));
         }
     )";
 
@@ -291,7 +297,7 @@ namespace
                     }
 
                     vec3 glow = vec3 (0.0);
-                    float thick = 0.0;
+                    float thick = 0.0, strong = 0.0;
 
                     for (int k = 0; k < 8; ++k)
                     {
@@ -299,7 +305,7 @@ namespace
                             break;
 
                         vec3 q = sourceAxes[k] * (p - sourceAt[k]);
-                        vec3 colour;
+                        vec4 colour;
                         float a = field (q, k, colour);
                         float dim = max (0.0, 1.0 - sourceFade[k] * length (q));
 
@@ -310,14 +316,17 @@ namespace
                         // shell of a ring would hide all the shells inside
                         // it, so rings let most of the light through.
                         float m = abs (a) * dim * (rings > 0.5 ? 0.3 : 2.0);
-                        glow += m * colour;
-                        thick += m;
+                        // The colour's alpha is how much of the light behind
+                        // it a point hides.
+                        glow += m * colour.rgb;
+                        thick += m * colour.a;
+                        strong += m;
                     }
 
                     // In an endless field the far away sinks into the dark.
                     float covers = 1.0 - exp (-thick * density * pace);
                     float haze = endless > 0.5 ? exp (-0.12 * t) : 1.0;
-                    light += through * covers * haze * glow / max (thick, 1.0e-5);
+                    light += through * covers * haze * glow / max (strong, 1.0e-5);
                     through *= 1.0 - covers;
                     if (through < 0.02)
                         break;
@@ -750,7 +759,8 @@ ScopeComponent::Look ScopeComponent::readLook (const ScopeParamSet* params)
              get (pFieldVolume) > 0.5f,
              0.5f * std::pow (80.0f, get (pFieldDensity) * 0.01f),
              get (pFieldFocus),
-             get (pFieldAperture) * 0.01f };
+             get (pFieldAperture) * 0.01f,
+             get (pAlpha) * 0.01f };
 }
 
 scope::Camera ScopeComponent::cameraOf (const Look& look)
@@ -1009,7 +1019,7 @@ void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& came
         for (auto* target : { &accumTarget, &currentTarget })
         {
             target->bind();
-            owner.useLineShader (target == &accumTarget ? 1.0f - keep : 1.0f);
+            owner.useLineShader ((target == &accumTarget ? 1.0f - keep : 1.0f) * look.alpha);
             if (owner.usePanel (placement, camera.turn, halfWidth, camera.shift))
                 owner.drawVertices (frame->panels[panel].triangles, owner.linePosition, owner.lineColour);
         }
@@ -1110,6 +1120,7 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     glUniform1fv (glGetUniformLocation (program, "sourceFade"), scope::maxFieldSources, fade);
     glUniformMatrix3fv (glGetUniformLocation (program, "sourceAxes"), scope::maxFieldSources, GL_FALSE, axes);
     shader.setUniform ("count", (GLint) count);
+    shader.setUniform ("colourAlpha", look.alpha);
     shader.setUniform ("reach", juce::jmax (1.0e-3f, frame->reach));
     shader.setUniform ("rings", frame->rings ? 1.0f : 0.0f);
     shader.setUniform ("eq", frame->eq ? 1.0f : 0.0f);

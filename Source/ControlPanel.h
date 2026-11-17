@@ -179,6 +179,8 @@ public:
         setUp (fieldSpeed, "fieldspeed", "Field speed", " %");
         setUp (fieldDensity, "fielddensity", "Density", " %");
         fieldDensity.slider.setTooltip ("Field mode, as a volume: how solid the dots are. Low, you see deep into the field; high, the nearest dots hide the ones behind");
+        setUp (alpha, "alpha", "Alpha", " %");
+        alpha.slider.setTooltip ("The alpha of the colours, in every mode. For curves and the field on its planes it is how much of their light is added; in the field as a volume it is how much a dot hides what is behind it, without making it dimmer");
         fieldShapeBox.addItemList (juce::StringArray::fromTokens (scope::paramTable[scope::pFieldShape].choices, "|", ""), 1);
         fieldShapeBox.setTooltip ("Field mode: Dots stand still and pulse, large for low notes and fine for high ones. Rings spread out from this instance's position, like ripples");
         setUp (fieldFocus, "fieldfocus", "Focus", "");
@@ -298,9 +300,19 @@ public:
 
         // Row 2: the signal. Row 3: the image.
         if (delay.slider.isVisible())
-            placeRow (nextRow(), { &window, &delay, &afterglow });
+        {
+            // Four in this row, so in quarters.
+            auto row = nextRow();
+            const int quarter = row.getWidth() / 4;
+            for (auto* ls : { &window, &delay, &afterglow, &alpha })
+            {
+                auto cell = row.removeFromLeft (quarter);
+                ls->label.setBounds (cell.removeFromLeft (76));
+                ls->slider.setBounds (cell.reduced (4, 0));
+            }
+        }
         else
-            placeRow (nextRow(), { &window, &afterglow });
+            placeRow (nextRow(), { &window, &afterglow, &alpha });
         placeRow (nextRow(), { &brightness, &contrast, &blur });
 
         // Row 4: band limits, then how this instance layers in the third cell.
@@ -500,7 +512,7 @@ private:
 
     LabelledSlider window, delay, afterglow, brightness, contrast, blur, lowCut, highCut, swingRate,
                    planeRotX, planeRotY, planeRotZ, viewYaw, viewPitch, viewRoll,
-                   posX, posY, posZ, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture;
+                   posX, posY, posZ, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture, alpha;
 
     std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, blendAttachment, layerAttachment, swingMotionAttachment, planeAttachment, fieldShapeAttachment;
     std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment, swingSyncAttachment, fieldLockAttachment, fieldVolumeAttachment, fieldEqAttachment;

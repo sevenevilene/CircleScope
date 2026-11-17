@@ -36,6 +36,10 @@
 // of field, like a camera lens: what is at the depth of Field focus is
 // sharp, and the rest blurs the more the further it is from there.
 //
+// Alpha is the alpha of the colours, in every mode: for curves and the
+// field on its planes how much of their light is added, in the field's
+// volume how much a point hides what is behind it.
+//
 // New parameters go at the end: a receiver takes as many values as it knows
 // and leaves the rest at their defaults.
 namespace scope
@@ -47,7 +51,7 @@ namespace scope
         pBlend, pLayer, pDivide, pSwingMotion, pSwingRate, pSwingSync,
         pPlane, pPlaneRotX, pPlaneRotY, pPlaneRotZ, pViewYaw, pViewPitch, pViewRoll,
         pPosX, pPosY, pPosZ, pFieldFade, pFieldLock, pFieldSpeed, pFieldVolume, pFieldDensity, pFieldShape, pFieldEq, pFieldEqWidth, pFieldFocus, pFieldAperture,
-        pCamX, pCamY, pCamZ,
+        pCamX, pCamY, pCamZ, pAlpha,
         numParams
     };
 
@@ -127,5 +131,6 @@ namespace scope
         { "camx",       "Camera X",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
         { "camy",       "Camera Y",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
         { "camz",       "Camera Z",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
+        { "alpha",      "Alpha",      ParamKind::real,    0.0f, 100.0f,   0.1f,  1.0f,  100.0f,   "%",  "",                                -1 },
     };
 }
