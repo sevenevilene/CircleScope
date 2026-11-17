@@ -3,14 +3,20 @@
 #include "PluginProcessor.h"
 #include "ColourScaleEditor.h"
 
-// Where the Field EQ's curve is drawn: distance from the instance's
-// position runs to the right, pitch upward, and the line says which pitch
-// belongs at which distance. Drag to draw it.
+// Where a curve over distance is drawn: distance from the instance's
+// position runs to the right, and the line says what belongs at which
+// distance. Drag to draw it. There are three: the Field EQ's, with pitch
+// upward, the field's fade, with how strong the field is upward, and that
+// of what is seen, with how visible a point is upward and how strongly the
+// wave swings there across.
 class FieldCurveEditor : public juce::Component,
                          public juce::SettableTooltipClient
 {
 public:
-    explicit FieldCurveEditor (ScopeSource& sourceToEdit) : source (sourceToEdit) {}
+    // The curve's fieldCurvePoints values, how many lines divide its
+    // height, and what is written in its corners.
+    FieldCurveEditor (std::atomic<float>* valuesToEdit, int gridLines, juce::String topLeftText, juce::String bottomLeftText, juce::String bottomRightText)
+        : values (valuesToEdit), divisions (gridLines), topLeft (std::move (topLeftText)), bottomLeft (std::move (bottomLeftText)), bottomRight (std::move (bottomRightText)) {}
 
     void paint (juce::Graphics& g) override
     {
@@ -19,11 +25,9 @@ public:
         g.setColour (juce::Colour (0xff0d0d10));
         g.fillRoundedRectangle (area, 4.0f);
 
-        // An octave apart, 20 Hz at the bottom.
         g.setColour (juce::Colours::white.withAlpha (0.07f * dim));
-        const float octaves = (float) scope::fieldBands * scope::fieldBandOctaves;
-        for (int octave = 1; (float) octave < octaves; ++octave)
-            g.fillRect (area.getX(), area.getBottom() - area.getHeight() * (float) octave / octaves, area.getWidth(), 1.0f);
+        for (int line = 1; line < divisions; ++line)
+            g.fillRect (area.getX(), area.getBottom() - area.getHeight() * (float) line / (float) divisions, area.getWidth(), 1.0f);
 
         juce::Path line;
         for (int i = 0; i < scope::fieldCurvePoints; ++i)
@@ -40,9 +44,9 @@ public:
         g.setColour (juce::Colours::white.withAlpha (0.4f * dim));
         g.setFont (11.0f);
         const auto text = getLocalBounds().reduced (5, 2);
-        g.drawText ("20 kHz", text, juce::Justification::topLeft);
-        g.drawText ("20 Hz, at the centre", text, juce::Justification::bottomLeft);
-        g.drawText ("far out", text, juce::Justification::bottomRight);
+        g.drawText (topLeft, text, juce::Justification::topLeft);
+        g.drawText (bottomLeft, text, juce::Justification::bottomLeft);
+        g.drawText (bottomRight, text, juce::Justification::bottomRight);
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -60,7 +64,7 @@ public:
 
         if (lastIndex < 0 || lastIndex == index)
         {
-            source.fieldCurve[index].store (value);
+            values[index].store (value);
         }
         else
         {
@@ -68,7 +72,7 @@ public:
             for (int i = lastIndex + step; i != index + step; i += step)
             {
                 const float t = (float) (i - lastIndex) / (float) (index - lastIndex);
-                source.fieldCurve[i].store (lastValue + (value - lastValue) * t);
+                values[i].store (lastValue + (value - lastValue) * t);
             }
         }
 
@@ -81,10 +85,12 @@ private:
     juce::Point<float> pointFor (int i) const
     {
         return { (float) getWidth() * (float) i / (float) (scope::fieldCurvePoints - 1),
-                 (float) getHeight() * (1.0f - source.fieldCurve[i].load()) };
+                 (float) getHeight() * (1.0f - values[i].load()) };
     }
 
-    ScopeSource& source;
+    std::atomic<float>* values;
+    int divisions;
+    juce::String topLeft, bottomLeft, bottomRight;
     int lastIndex = -1;
     float lastValue = 0.0f;
 };
@@ -138,7 +144,7 @@ public:
 
         for (juce::Component* c : std::initializer_list<juce::Component*> { &modeBox, &colourBox, &layoutBox, &guidesButton, &testButton,
                                                                             &swingLabel, &swingMotionBox, &swingSyncButton,
-                                                                            &planeLabel, &planeBox, &sumButton, &fieldLockButton, &fieldVolumeButton, &fieldShapeBox, &fieldEqButton, &fieldCurve, &coloursLabel, &colourScale,
+                                                                            &planeLabel, &planeBox, &sumButton, &fieldLockButton, &fieldVolumeButton, &fieldShapeBox, &fieldEqButton, &fieldCurve, &fadeCurve, &showCurve, &coloursLabel, &colourScale,
                                                                             &blendLabel, &blendBox, &layerLabel, &layerBox,
                                                                             &streamLabel, &divideButton, &streamStatus })
             addAndMakeVisible (c);
@@ -199,7 +205,9 @@ public:
             ls->slider.setTooltip ("Moves the centre of this instance's plane in the scene: x to the right, y up, z towards you. 1 is the edge of the picture's square. In Field mode it is the centre of this instance's field");
             ls->slider.setDoubleClickReturnValue (true, 0.0);
         }
-        fieldFade.slider.setTooltip ("Field mode: how fast this instance's field fades with distance from its position. At 100 % it is gone at the edge of the picture's square");
+        fieldFade.slider.setTooltip ("Field mode: how near to this instance's position its field ends. At 100 % it is gone at the edge of the picture's square. How it fades on the way there is the curve below");
+        showCurve.setTooltip ("Field mode: drag to draw what in the field is seen. Left is where the wave is still (the gaps between the dots), right where it swings most (the middle of a dot); top is fully visible, bottom not at all. A rising line shows the dots. A falling line turns it inside out: the dots go and the still places between them show, like the sand on a Chladni plate");
+        fadeCurve.setTooltip ("Field fade: drag to draw how strong the field is at each distance from this instance's position. Left is the centre, right is where Field fade says the field ends; top is all of it, bottom none");
         for (auto* ls : { &planeRotX, &planeRotY, &planeRotZ })
             ls->slider.setTooltip ("Turns this instance's plane about the scene's axis, on top of the Plane chosen");
         for (auto* ls : { &viewYaw, &viewPitch, &viewRoll })
@@ -240,7 +248,7 @@ public:
 
     int getPreferredHeight() const
     {
-        return 12 + rowHeight * (9 + (showsSwing ? 1 : 0) + (showsField ? 4 : 0)) + (showsCurve ? curveHeight : 0);
+        return 12 + rowHeight * (9 + (showsSwing ? 1 : 0) + (showsField ? 4 : 0)) + (showsField ? 2 * curveHeight : 0) + (showsCurve ? curveHeight : 0);
     }
 
     std::function<void()> onHeightChanged;
@@ -249,12 +257,12 @@ public:
     {
         if (isTranslucent)
         {
-            g.setColour (juce::Colour (0xff17171a).withAlpha (0.78f));
+            g.setColour (juce::Colour (0xff09090b).withAlpha (0.78f));
             g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
         }
         else
         {
-            g.fillAll (juce::Colour (0xff17171a));
+            g.fillAll (juce::Colour (0xff09090b));
         }
     }
 
@@ -358,12 +366,14 @@ public:
             auto fadeRow = nextRow();
             placeRow (fadeRow, { &fieldFade, &fieldSpeed });
             fieldLockButton.setBounds (thirdOf (fadeRow, 2).removeFromLeft (150).reduced (4, 0));
+            fadeCurve.setBounds (controls.removeFromTop (curveHeight).reduced (4, 3));
 
             auto volumeRow = nextRow();
             auto shape = thirdOf (volumeRow, 0);
             fieldShapeBox.setBounds (shape.removeFromLeft (120).reduced (4, 0));
             fieldVolumeButton.setBounds (shape.removeFromLeft (90).reduced (4, 0));
             placeRow (fromSecondThird (volumeRow), { &fieldDensity });
+            showCurve.setBounds (controls.removeFromTop (curveHeight).reduced (4, 3));
 
             placeRow (nextRow(), { &fieldFocus, &fieldAperture });
 
@@ -431,6 +441,7 @@ private:
                        &fieldFocus.label, &fieldFocus.slider, &fieldAperture.label, &fieldAperture.slider,
                        &fieldEqButton, &fieldEqWidth.label, &fieldEqWidth.slider });
         show (curve, { &fieldCurve });
+        show (field, { &fadeCurve, &showCurve });
 
         resized();
         if (onHeightChanged)
@@ -504,7 +515,10 @@ private:
     juce::ComboBox modeBox, colourBox, layoutBox, blendBox, layerBox, swingMotionBox, planeBox, fieldShapeBox;
     juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" }, divideButton { "Divide" },
                        swingSyncButton { "Once per window" }, fieldLockButton { "Lock to wave" }, fieldVolumeButton { "Volume" }, fieldEqButton { "EQ by distance" };
-    FieldCurveEditor fieldCurve { processor.source };
+    // An octave apart, 20 Hz at the bottom.
+    FieldCurveEditor fieldCurve { processor.source.fieldCurve, juce::roundToInt ((float) scope::fieldBands * scope::fieldBandOctaves), "20 kHz", "20 Hz, at the centre", "far out" };
+    FieldCurveEditor showCurve { processor.source.showCurve, 4, "Seen: fully", "not, where the wave is still", "where it swings most" };
+    FieldCurveEditor fadeCurve { processor.source.fadeCurve, 4, "Fade: full", "none, at the centre", "where it ends" };
     ColourScaleEditor colourScale;                   // the scene's, not this instance's
     juce::TextButton sumButton { "Sum with..." };
     juce::Label blendLabel, layerLabel, streamLabel, streamStatus, swingLabel, planeLabel, coloursLabel;

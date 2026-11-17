@@ -87,7 +87,13 @@ Each channel is drawn as a 2D trajectory in its own square:
   solid they are: low, you see deep into the block; high, only its outside.
   How solid a ball is at each point follows the amplitude, so the wave's
   shape is the ball's: a smooth tone makes soft clouds, a square wave or a
-  sharp attack hard-edged blocks. Field fade carves the block down to a ball round the
+  sharp attack hard-edged blocks. The curve under Density says what is
+  seen: left is where the wave is still (the gaps between the dots), right
+  where it swings most, and its height how visible that is. Drag to draw
+  it. A rising line, as it starts, shows the dots; a falling one turns the
+  field inside out, so the dots go and the still places between them
+  show, pale, like the sand on a Chladni plate. A bump in the middle shows
+  only the dots' skins. It works on the planes too. Field fade carves the block down to a ball round the
   instance's position. With Volume off, only the instance's plane is drawn,
   as a cut through the balls: lighter work for the graphics card (a
   Raspberry Pi should use this). With **Sum

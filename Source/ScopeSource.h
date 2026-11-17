@@ -66,10 +66,24 @@ struct ScopeSource : ScopeParamSet
     // pitches at the centre, rising evenly to high ones further out.
     std::atomic<float> fieldCurve[scope::fieldCurvePoints];
 
+    // The curve of the field's fade (see ScopeParams.h): how strong the
+    // field is at each distance. It starts as a straight line from all of
+    // it at the centre to none where Field fade says it ends.
+    std::atomic<float> fadeCurve[scope::fieldCurvePoints];
+
+    // The curve of what in the field is seen (see ScopeParams.h): how
+    // visible a point is by how strongly the wave swings there. It starts
+    // as a straight line: the stronger, the more visible.
+    std::atomic<float> showCurve[scope::fieldCurvePoints];
+
     ScopeSource()
     {
         for (int i = 0; i < scope::fieldCurvePoints; ++i)
+        {
             fieldCurve[i].store (0.15f + 0.7f * (float) i / (float) (scope::fieldCurvePoints - 1));
+            fadeCurve[i].store (1.0f - (float) i / (float) (scope::fieldCurvePoints - 1));
+            showCurve[i].store ((float) i / (float) (scope::fieldCurvePoints - 1));
+        }
     }
 };
 

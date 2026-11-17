@@ -23,11 +23,19 @@
 //
 // Field fade, Field lock and Field speed belong to the Field mode (see
 // CurveAnalyser.h; its colours are the scene's, see ColourScale.h): how
-// fast it fades with distance from the instance's position, whether the picture is locked to
+// near to the instance's position the field ends (how strong it is on the
+// way there is a curve the user draws, not a parameter:
+// ScopeSource::fadeCurve, with fieldCurvePoints values from the centre to
+// where it ends), whether the picture is locked to
 // the wave, and how fast the locked picture moves on: a slow motion, in
 // percent of real time. Field volume shows the field as a volume in space,
 // looked through from the camera, instead of only where the planes cut it;
-// Field density is how solid that volume is. Field shape is what the sound
+// Field density is how solid that volume is. What in the field is seen is
+// a curve the user draws too (ScopeSource::showCurve): how visible a point
+// is, for fieldCurvePoints strengths of the wave there from still to full
+// swing. A rising line shows the dots; a falling one shows what is between
+// them instead, the places where the wave is still, like the sand on a
+// Chladni plate. Field shape is what the sound
 // makes in space: dots that stand still, or rings that spread from the
 // instance's position. Field EQ lets only a range of pitch into the field
 // at each distance from the instance's position: which pitch is a curve

@@ -76,8 +76,12 @@ namespace net
     // are sources, one float, the reach of their waves, and the colours of
     // the bands of pitch (scope::fieldBands times r, g, b as floats). With
     // the EQ on, then its width (a float) and its curve
-    // (scope::fieldCurvePoints floats). Every source has scope::fieldBands
-    // times scope::fieldSamples samples.
+    // (scope::fieldCurvePoints floats). Last, each source's fade curve
+    // (scope::fieldCurvePoints bytes, in 1/255); a sender from before there
+    // was one leaves them out, and the fade is then a straight line. After
+    // them the curve of what is seen (scope::fieldCurvePoints bytes, in
+    // 1/255), likewise: left out, it is a rising straight line. Every
+    // source has scope::fieldBands times scope::fieldSamples samples.
     struct FrameHead
     {
         juce::uint8 layout;            // scope::Layout

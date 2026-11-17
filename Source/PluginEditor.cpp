@@ -17,8 +17,8 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     scope.onDoubleClick = [this] { toggleFullScreen(); };
 
     setResizable (true, true);
-    setResizeLimits (800, 740, 2400, 1500);
-    setSize (980, 950);
+    setResizeLimits (800, 800, 2400, 1500);
+    setSize (980, 1010);
 
     startTimerHz (5);
     timerCallback();
@@ -63,7 +63,7 @@ void CircleScopeEditor::toggleFullScreen()
 
 void CircleScopeEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff17171a));
+    g.fillAll (juce::Colour (0xff09090b));
 }
 
 void CircleScopeEditor::resized()

@@ -194,6 +194,12 @@ private:
                 std::memcpy (out + sizeof (float), frame.curve, sizeof (frame.curve));
                 out += sizeof (float) + sizeof (frame.curve);
             }
+            for (int k = 0; k < numSources; ++k)
+                for (float v : frame.sources[k].fadeCurve)
+                    *out++ = (char) (juce::uint8) juce::roundToInt (juce::jlimit (0.0f, 1.0f, v) * 255.0f);
+            if (numSources > 0)
+                for (float v : frame.show)
+                    *out++ = (char) (juce::uint8) juce::roundToInt (juce::jlimit (0.0f, 1.0f, v) * 255.0f);
             send ((int) (out - packet.data()));
         }
 

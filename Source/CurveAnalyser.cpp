@@ -383,7 +383,10 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
     frame.eq = s.fieldEq;
     frame.eqWidth = s.fieldEqWidth;
     for (int i = 0; i < scope::fieldCurvePoints; ++i)
+    {
         frame.curve[i] = juce::jlimit (0.0f, 1.0f, lead.source.fieldCurve[i].load());
+        frame.show[i] = juce::jlimit (0.0f, 1.0f, lead.source.showCurve[i].load());
+    }
 
     for (int band = 0; band < scope::fieldBands; ++band)
         colours.colourAt (scope::ColourScale::placeOfBand (band), frame.bandColour[band]);
@@ -406,6 +409,8 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
         out.plane = set.plane;
         out.at = set.at;
         out.fade = set.fieldFade;
+        for (int i = 0; i < scope::fieldCurvePoints; ++i)
+            out.fadeCurve[i] = juce::jlimit (0.0f, 1.0f, sig.source.fadeCurve[i].load());
 
         // The sound once per band of pitch: its spectrum, and of that
         // each band in turn, back as sound. The bands overlap so that

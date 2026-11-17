@@ -338,6 +338,8 @@ private:
                 for (int band = 0; band < scope::fieldBands; ++band)
                     s.level[band] = finite (wire.level[band], 0.0f, 4.0f);
                 s.fade = finite (wire.fade, 0.0f, 10.0f);
+                for (int i = 0; i < scope::fieldCurvePoints; ++i)
+                    s.fadeCurve[i] = 1.0f - (float) i / (float) (scope::fieldCurvePoints - 1);
                 s.samples.resize ((size_t) (scope::fieldSamples * scope::fieldBands));   // keeps what has arrived already
             }
             if (numSources > 0)
@@ -362,6 +364,23 @@ private:
                 frame.eqWidth = finite (frame.eqWidth, 0.1f, 20.0f);
                 for (auto& v : frame.curve)
                     v = finite (v, 0.0f, 1.0f);
+                in += eqBytes;
+            }
+
+            // The fade curves, if the sender has them.
+            for (int i = 0; i < scope::fieldCurvePoints; ++i)
+                frame.show[i] = (float) i / (float) (scope::fieldCurvePoints - 1);
+
+            if (payload + payloadSize - in >= numSources * scope::fieldCurvePoints)
+            {
+                for (int k = 0; k < numSources; ++k)
+                    for (auto& v : frame.sources[k].fadeCurve)
+                        v = (float) (juce::uint8) *in++ / 255.0f;
+
+                // And the curve of what is seen, likewise.
+                if (numSources > 0 && payload + payloadSize - in >= scope::fieldCurvePoints)
+                    for (auto& v : frame.show)
+                        v = (float) (juce::uint8) *in++ / 255.0f;
             }
             for (int p = 0; p < 2; ++p)
             {

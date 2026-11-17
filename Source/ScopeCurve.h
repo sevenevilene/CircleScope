@@ -72,7 +72,8 @@ namespace scope
     {
         Mat3 plane;
         Vec3 at;
-        float fade = 0.0f;                       // amplitude lost per plane unit of distance from it
+        float fade = 0.0f;                       // one over the distance from it at which its field ends, in plane units
+        float fadeCurve[fieldCurvePoints] {};    // how strong it is on the way there: 0..1 at evenly spaced distances
         float level[fieldBands] {};              // what each band's samples are to be multiplied by
         std::vector<float> samples;              // fieldSamples of them, -1..1, for each of the fieldBands
     };
@@ -104,6 +105,7 @@ namespace scope
         bool eq = false;                         // only a range of pitch at each distance from a source:
         float eqWidth = 2.0f;                    // this many octaves wide,
         float curve[fieldCurvePoints] {};        // about the pitch the curve gives for the distance
+        float show[fieldCurvePoints] {};         // how visible a point is by how strongly the wave swings there: 0..1, from still to full
 
         void clear()
         {

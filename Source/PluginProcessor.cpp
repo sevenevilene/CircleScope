@@ -257,6 +257,18 @@ void CircleScopeProcessor::getStateInformation (juce::MemoryBlock& destData)
         curve.add (juce::String (value.load(), 4));
     state.setProperty ("fieldCurve", curve.joinIntoString (","), nullptr);
 
+    // And so is the curve of the field's fade.
+    juce::StringArray fade;
+    for (auto& value : source.fadeCurve)
+        fade.add (juce::String (value.load(), 4));
+    state.setProperty ("fadeCurve", fade.joinIntoString (","), nullptr);
+
+    // And the curve of what in the field is seen.
+    juce::StringArray show;
+    for (auto& value : source.showCurve)
+        show.add (juce::String (value.load(), 4));
+    state.setProperty ("showCurve", show.joinIntoString (","), nullptr);
+
     // The scene's colour scale: every instance saves a copy, and the one
     // changed last wins when they are loaded (ColourScale.h).
     state.setProperty ("colourScale", scope::SceneColours::get().read().toString(), nullptr);
@@ -280,6 +292,16 @@ void CircleScopeProcessor::setStateInformation (const void* data, int sizeInByte
             if (curve.size() == scope::fieldCurvePoints)
                 for (int k = 0; k < scope::fieldCurvePoints; ++k)
                     source.fieldCurve[k].store (juce::jlimit (0.0f, 1.0f, curve[k].getFloatValue()));
+
+            const auto fade = juce::StringArray::fromTokens (apvts.state["fadeCurve"].toString(), ",", "");
+            if (fade.size() == scope::fieldCurvePoints)
+                for (int k = 0; k < scope::fieldCurvePoints; ++k)
+                    source.fadeCurve[k].store (juce::jlimit (0.0f, 1.0f, fade[k].getFloatValue()));
+
+            const auto show = juce::StringArray::fromTokens (apvts.state["showCurve"].toString(), ",", "");
+            if (show.size() == scope::fieldCurvePoints)
+                for (int k = 0; k < scope::fieldCurvePoints; ++k)
+                    source.showCurve[k].store (juce::jlimit (0.0f, 1.0f, show[k].getFloatValue()));
 
             if (scope::ColourScale scale; scale.fromString (apvts.state["colourScale"].toString()))
                 scope::SceneColours::get().offer (scale, apvts.state["colourScaleChanged"].toString().getLargeIntValue());

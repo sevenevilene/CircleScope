@@ -126,6 +126,31 @@ namespace
         uniform float curve[16];      // the pitch at each distance, 0..1 over the eight bands
         uniform vec3 bandColour[8];   // each band's colour on the scale
         uniform float bandLevel[64];  // how strong each band of each source is
+        uniform float sourceFade[8];  // one over the distance at which each source's field ends
+        uniform float fadeCurve[128]; // how strong each source's field is on the way there, at 16 distances
+
+        // How much of source k's field is left at a distance from it.
+        float fadeAt (int k, float away)
+        {
+            float along = away * sourceFade[k];
+            if (along >= 1.0)
+                return 0.0;
+
+            along *= 15.0;
+            int i = int (min (floor (along), 14.0));
+            return mix (fadeCurve[k * 16 + i], fadeCurve[k * 16 + i + 1], along - float (i));
+        }
+
+        uniform float show[16];       // how visible a point is by how strongly the wave swings there
+
+        // How visible a point with this amplitude is. A wave louder than
+        // full scale goes on from the curve's end.
+        float seen (float amplitude)
+        {
+            float along = min (abs (amplitude), 1.0) * 15.0;
+            int i = int (min (floor (along), 14.0));
+            return mix (show[i], show[i + 1], along - float (i)) * max (abs (amplitude), 1.0);
+        }
 
         float wave (float along, float row)
         {
@@ -173,10 +198,13 @@ namespace
                 // A band too faint to see is not worth its look-ups.
                 if (lets > 0.004)
                 {
+                    // Where the wave is still there is a little of the
+                    // colour left, halfway between the two: the curve
+                    // of what is seen may show just those places.
                     float x = shape (q, float (k * 8 + b));
                     a += lets * x;
-                    sum += lets * abs (x) * tint (vec4 (bandColour[b], colourAlpha), x);
-                    weight += lets * abs (x);
+                    sum += lets * (abs (x) + 0.02) * tint (vec4 (bandColour[b], colourAlpha), x);
+                    weight += lets * (abs (x) + 0.02);
                 }
             }
             colour = sum / max (weight, 1.0e-6);
@@ -190,7 +218,6 @@ namespace
         uniform int count;
         uniform vec3 sourceAt[8];
         uniform mat3 sourceAxes[8];   // the scene to the source's own axes
-        uniform float sourceFade[8];
         uniform float alphaScale;
         varying vec3 where;
 
@@ -207,9 +234,9 @@ namespace
 
                 vec3 q = sourceAxes[k] * (where - sourceAt[k]);
                 vec4 colour;
-                float a = field (q, k, colour) * max (0.0, 1.0 - sourceFade[k] * length (q));
-                light += abs (a) * vec4 (colour.rgb, colour.a);
-                weight += abs (a);
+                float a = seen (field (q, k, colour)) * fadeAt (k, length (q));
+                light += a * vec4 (colour.rgb, colour.a);
+                weight += a;
             }
             gl_FragColor = vec4 (light.rgb, alphaScale * light.a / max (weight, 1.0e-6));
         }
@@ -236,7 +263,6 @@ namespace
         uniform int count;
         uniform vec3 sourceAt[8];
         uniform mat3 sourceAxes[8];
-        uniform float sourceFade[8];
         uniform mat3 cameraBack;  // the viewer's space to the scene, for directions
         uniform vec3 eyeAt;       // where the eye is in the scene
         uniform float eye;
@@ -307,15 +333,16 @@ namespace
                         vec3 q = sourceAxes[k] * (p - sourceAt[k]);
                         vec4 colour;
                         float a = field (q, k, colour);
-                        float dim = max (0.0, 1.0 - sourceFade[k] * length (q));
+                        float dim = fadeAt (k, length (q));
 
-                        // How solid a point is follows the amplitude, so the
+                        // How solid a point is follows the amplitude (by the
+                        // curve of what is seen: as it starts, the same), so the
                         // shape of the sound's wave is the shape of a ball
                         // from its edge to its middle: a smooth wave makes
                         // soft clouds, a steep one hard-edged blocks. A
                         // shell of a ring would hide all the shells inside
                         // it, so rings let most of the light through.
-                        float m = abs (a) * dim * (rings > 0.5 ? 0.3 : 2.0);
+                        float m = seen (a) * dim * (rings > 0.5 ? 0.3 : 2.0);
                         // The colour's alpha is how much of the light behind
                         // it a point hides.
                         glow += m * colour.rgb;
@@ -1097,6 +1124,7 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     const int count = juce::jmin (frame->numSources, scope::maxFieldSources);
     float at[scope::maxFieldSources * 3] {}, fade[scope::maxFieldSources] {};
     float level[scope::maxFieldSources * scope::fieldBands] {};
+    float fadeCurve[scope::maxFieldSources * scope::fieldCurvePoints] {};
     float axes[scope::maxFieldSources * 9] {};
 
     for (int k = 0; k < count; ++k)
@@ -1104,6 +1132,7 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
         const auto& s = frame->sources[k];
         at[k * 3] = s.at.x;     at[k * 3 + 1] = s.at.y;     at[k * 3 + 2] = s.at.z;
         fade[k] = s.fade;
+        std::copy_n (s.fadeCurve, scope::fieldCurvePoints, fadeCurve + k * scope::fieldCurvePoints);
         std::copy_n (s.level, scope::fieldBands, level + k * scope::fieldBands);
 
         // The plane turned back: its transpose.
@@ -1118,6 +1147,7 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     glUniform3fv (glGetUniformLocation (program, "bandColour"), scope::fieldBands, &frame->bandColour[0][0]);
     glUniform1fv (glGetUniformLocation (program, "bandLevel"), scope::maxFieldSources * scope::fieldBands, level);
     glUniform1fv (glGetUniformLocation (program, "sourceFade"), scope::maxFieldSources, fade);
+    glUniform1fv (glGetUniformLocation (program, "fadeCurve"), scope::maxFieldSources * scope::fieldCurvePoints, fadeCurve);
     glUniformMatrix3fv (glGetUniformLocation (program, "sourceAxes"), scope::maxFieldSources, GL_FALSE, axes);
     shader.setUniform ("count", (GLint) count);
     shader.setUniform ("colourAlpha", look.alpha);
@@ -1126,6 +1156,7 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     shader.setUniform ("eq", frame->eq ? 1.0f : 0.0f);
     shader.setUniform ("eqWidth", frame->eqWidth / scope::fieldBandOctaves);
     glUniform1fv (glGetUniformLocation (program, "curve"), scope::fieldCurvePoints, frame->curve);
+    glUniform1fv (glGetUniformLocation (program, "show"), scope::fieldCurvePoints, frame->show);
     shader.setUniform ("eye", scope::eyeDistance);
     shader.setUniform ("waves", (GLint) 0);
     bindTexture (0, fieldTexture);
