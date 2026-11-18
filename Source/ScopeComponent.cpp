@@ -1297,6 +1297,10 @@ void ScopeComponent::renderOpenGL()
     for (int i = 0; i < count && camera.atRest(); ++i)
         camera = cameraOf (readLook (&list[(size_t) i].feed->params));
 
+    // And this scope's own side of it.
+    if (const auto from = (scope::Perspective) perspective.load(); from != scope::Perspective::front)
+        camera = camera.turnedBy (scope::perspectiveTurn (from));
+
     for (int i = 0; i < count; ++i)
         drawn[i]->render (list[(size_t) i].view, camera, w, h, scale, dt);
 

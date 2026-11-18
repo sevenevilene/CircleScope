@@ -10,6 +10,7 @@
 #include <map>
 #include <tuple>
 #include "../NetProtocol.h"
+#include "../Plane.h"
 
 namespace
 {
@@ -18,6 +19,7 @@ const juce::Colour background (0xff121215), panelColour (0xff1c1c21), accent (0x
 struct OutputState
 {
     int stream = 1, cols = 1, rows = 1, col = 0, row = 0, spanW = 1, spanH = 1;
+    int perspective = 0;   // scope::Perspective; a node from before there was one says nothing, which is Front
     int width = 0, height = 0, fps = 0, rxAgeMs = -1, lost = 0;
     juce::Image preview;
 };
@@ -144,6 +146,7 @@ private:
                     state.row = (int) o["row"];
                     state.spanW = (int) o["spanw"];
                     state.spanH = (int) o["spanh"];
+                    state.perspective = juce::jlimit (0, scope::numPerspectives - 1, (int) o["perspective"]);
                     state.width = (int) o["width"];
                     state.height = (int) o["height"];
                     state.fps = (int) o["fps"];
@@ -270,6 +273,8 @@ public:
             const auto& s = link.outputs[(size_t) output];
             const bool receiving = s.rxAgeMs >= 0 && s.rxAgeMs < 1000;
             auto text = "stream " + juce::String (s.stream) + (link.testTone ? " (test tone)" : receiving ? "" : " (no signal)");
+            if (s.perspective > 0)
+                text << "   " << juce::String (scope::perspectiveNames[s.perspective]).toLowerCase();
             if (s.cols * s.rows > 1)
                 text << "   wall " << s.cols << "x" << s.rows << " @ " << (s.col + 1) << "," << (s.row + 1);
             text << "   " << s.width << "x" << s.height << "   " << s.fps << " fps";
@@ -296,6 +301,9 @@ public:
         for (int i = 1; i <= net::maxStreams; ++i)
             streamBox.addItem ("Stream " + juce::String (i), i);
         streamBox.onChange = [this] { sendSetting ("stream", streamBox.getSelectedId()); };
+        for (int i = 0; i < scope::numPerspectives; ++i)
+            viewBox.addItem (scope::perspectiveNames[i], i + 1);
+        viewBox.onChange = [this] { sendSetting ("perspective", viewBox.getSelectedId() - 1); };
 
         auto setUpNumber = [this] (Number& n, const char* text, const char* key, bool oneBased)
         {
@@ -329,7 +337,7 @@ public:
         selectionLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
         rendererLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.5f));
         rendererLabel.setJustificationType (juce::Justification::centredRight);
-        for (juce::Component* c : std::initializer_list<juce::Component*> { &selectionLabel, &rendererLabel, &streamBox, &identifyButton, &testButton })
+        for (juce::Component* c : std::initializer_list<juce::Component*> { &selectionLabel, &rendererLabel, &streamBox, &viewBox, &identifyButton, &testButton })
             addAndMakeVisible (c);
 
         beacons = std::make_unique<BeaconListener> ([this] (juce::String address, int port, juce::String name)
@@ -390,13 +398,15 @@ public:
 
         inspector.removeFromTop (8);
         auto rowArea = inspector.removeFromTop (26);
-        streamBox.setBounds (rowArea.removeFromLeft (120));
+        streamBox.setBounds (rowArea.removeFromLeft (110));
+        rowArea.removeFromLeft (8);
+        viewBox.setBounds (rowArea.removeFromLeft (86));
         rowArea.removeFromLeft (8);
 
         auto place = [&rowArea] (Number& n, int labelWidth)
         {
             n.label.setBounds (rowArea.removeFromLeft (labelWidth));
-            n.slider.setBounds (rowArea.removeFromLeft (98).reduced (4, 0));
+            n.slider.setBounds (rowArea.removeFromLeft (84).reduced (4, 0));
         };
         place (cols, 74);
         place (rows, 42);
@@ -618,7 +628,7 @@ private:
         const auto* link = selectedLink();
         const bool haveState = link != nullptr && selectedTile->output < (int) link->outputs.size();
 
-        for (juce::Component* c : std::initializer_list<juce::Component*> { &streamBox, &identifyButton, &testButton, &cols.slider, &rows.slider,
+        for (juce::Component* c : std::initializer_list<juce::Component*> { &streamBox, &viewBox, &identifyButton, &testButton, &cols.slider, &rows.slider,
                                                                             &col.slider, &row.slider, &spanW.slider, &spanH.slider })
             c->setEnabled (haveState && link->connected);
 
@@ -646,6 +656,7 @@ private:
                 n.slider.setValue (value, juce::dontSendNotification);
         };
         streamBox.setSelectedId (s.stream, juce::dontSendNotification);
+        viewBox.setSelectedId (s.perspective + 1, juce::dontSendNotification);
         show (cols, s.cols);
         show (rows, s.rows);
         show (col, s.col + 1);
@@ -661,7 +672,7 @@ private:
     bool dirty = false, refreshing = false;
 
     juce::Label selectionLabel, rendererLabel;
-    juce::ComboBox streamBox;
+    juce::ComboBox streamBox, viewBox;
     Number cols, rows, col, row, spanW, spanH;
     juce::TextButton identifyButton { "Identify" };
     juce::ToggleButton testButton { "Test tone" };

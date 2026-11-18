@@ -66,6 +66,9 @@ public:
 
     void setLayerProvider (LayerProvider);
 
+    // The side the scene is shown from here (see Plane.h).
+    void setPerspective (scope::Perspective from) { perspective.store ((int) from); }
+
     // Small copies of the finished frame, for remote monitoring. The callback
     // runs on the render thread. An interval of 0 turns previews off.
     std::function<void (const juce::Image&)> onPreview;
@@ -157,6 +160,7 @@ private:
     RenderTarget previewTargets[4];                  // successive halvings of the screen
     std::vector<juce::uint8> previewPixels;
     std::atomic<int> previewIntervalMs { 0 };
+    std::atomic<int> perspective { 0 };              // scope::Perspective
     double lastFrameMs = 0.0, lastPreviewMs = 0.0, fpsWindowStartMs = 0.0;
     int framesInWindow = 0;
     std::atomic<float> framesPerSecond { 0.0f };

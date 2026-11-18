@@ -145,7 +145,40 @@ namespace scope
             const Vec3 q = turn * p;
             return { q.x + shift.x, q.y + shift.y, q.z + shift.z };
         }
+
+        // The same camera with what it sees turned once more, about the
+        // point it looks at.
+        Camera turnedBy (const Mat3& more) const noexcept
+        {
+            Camera c;
+            c.turn = more * turn;
+            c.shift = more * shift;
+            return c;
+        }
     };
+
+    // The side a receiver looks at the scene from. It is the receiver's own
+    // (a cell of a wall has one), on top of the scene's camera: the camera
+    // turns and moves the scene, and this says which side of the result is
+    // shown. So cells showing one stream from several sides work like
+    // cameras fixed to each other. Front is the scene as its camera has it.
+    enum class Perspective { front = 0, back, top, bottom, left, right };
+    constexpr int numPerspectives = 6;
+    inline constexpr const char* perspectiveNames[numPerspectives] = { "Front", "Back", "Top", "Bottom", "Left", "Right" };
+
+    inline Mat3 perspectiveTurn (Perspective from) noexcept
+    {
+        switch (from)
+        {
+            case Perspective::back:   return Mat3::aboutY (180.0f);
+            case Perspective::top:    return Mat3::aboutX (90.0f);     // -z is up, as on the XZ plane
+            case Perspective::bottom: return Mat3::aboutX (-90.0f);
+            case Perspective::left:   return Mat3::aboutY (90.0f);
+            case Perspective::right:  return Mat3::aboutY (-90.0f);
+            case Perspective::front:  break;
+        }
+        return {};
+    }
 
     // How far the eye is from the centre of a panel, in plane units. Sets
     // how strong the perspective is.

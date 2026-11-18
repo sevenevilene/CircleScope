@@ -22,9 +22,11 @@ namespace
 //==============================================================================
 // What one output (window) shows: a stream, and which cell of a wall of
 // cols x rows equal screens this output covers. A 1x1 wall is the whole picture.
+// And the side it shows the stream's scene from (scope::Perspective).
 struct OutputConfig
 {
     int stream = 1, cols = 1, rows = 1, col = 0, row = 0, spanW = 1, spanH = 1;
+    int perspective = 0;
 
     void sanitise()
     {
@@ -35,6 +37,7 @@ struct OutputConfig
         row = juce::jlimit (0, rows - 1, row);
         spanW = juce::jlimit (1, cols - col, spanW);
         spanH = juce::jlimit (1, rows - row, spanH);
+        perspective = juce::jlimit (0, scope::numPerspectives - 1, perspective);
     }
 
     ScopeComponent::View view() const
@@ -53,6 +56,7 @@ struct OutputConfig
         o->setProperty ("row", row);
         o->setProperty ("spanw", spanW);
         o->setProperty ("spanh", spanH);
+        o->setProperty ("perspective", perspective);
         return o;
     }
 
@@ -67,6 +71,7 @@ struct OutputConfig
         take ("row", row);
         take ("spanw", spanW);
         take ("spanh", spanH);
+        take ("perspective", perspective);
         sanitise();
     }
 };
@@ -415,6 +420,7 @@ private:
     // a layer, each drawn through this output's part of the wall.
     void showConfig (Output& output)
     {
+        output.window->scope.setPerspective ((scope::Perspective) output.config.perspective);
         output.window->scope.setLayerProvider ([this, stream = output.config.stream, view = output.config.view()] (ScopeComponent::LayerList& list)
         {
             StreamReceiver::LayerList heard;

@@ -218,6 +218,12 @@ window into a grid, one scope per cell.
   setup bar: grid size (up to 6 x 6) and, for the selected cell, its stream
   or Off. A new grid starts with streams 1, 2, 3... in reading order. The
   settings are remembered.
+- Each cell also has a **view**: the side it shows its scene from, Front
+  (the default), Back, Top, Bottom, Left or Right (`V` steps through them).
+  Give several cells the same stream and different views to see one scene
+  from several sides at once. The view comes on top of the instance's
+  camera, so turning or moving the camera turns all of them together. A
+  flat picture is edge-on from the sides, so this is for scenes with depth.
 
 ### Layers
 
@@ -272,7 +278,8 @@ Three programs work together on one network:
   Keys: `Esc`/`Q` quit, `T` test tone, `I` identify.
 - **CircleScope Control**: shows a live preview of every output of every node
   in a grid. Select a tile to set its stream and its place in a video wall
-  (wall size in screens, this screen's column and row, how many it spans).
+  (wall size in screens, this screen's column and row, how many it spans),
+  and its view: the side it shows the scene from, as for a cell of the wall.
   A wall of 4 x 3 screens on one stream draws one picture across all twelve.
 
 Nodes announce themselves by UDP broadcast (port 47800), so nothing needs an

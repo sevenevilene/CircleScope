@@ -12,6 +12,7 @@
 // Keys:  F        full screen on the display the window is on (Esc leaves it)
 //        Tab / S  show or hide the setup bar (grid size, stream of each cell)
 //        arrows   select a cell          + / -  change its stream
+//        V        the side the selected cell shows its scene from
 //        T        test tone              Q      quit
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -30,6 +31,7 @@ struct WallConfig
 
     int cols = 2, rows = 2;
     std::vector<int> streams { 1, 2, 3, 4 };   // one per cell, row by row; 0 = off
+    std::vector<int> views { 0, 0, 0, 0 };     // likewise: the side each shows its scene from (scope::Perspective)
     juce::Rectangle<int> windowBounds { 80, 80, 1280, 720 };
     bool fullScreen = false;
 
@@ -43,6 +45,7 @@ struct WallConfig
         streams.clear();
         for (int i = 0; i < numCells(); ++i)
             streams.push_back (i % net::maxStreams + 1);
+        views.assign ((size_t) numCells(), 0);
     }
 
     void load (const juce::File& file)
@@ -55,6 +58,9 @@ struct WallConfig
         if (const auto* list = saved["streams"].getArray(); list != nullptr && list->size() == numCells())
             for (int i = 0; i < numCells(); ++i)
                 streams[(size_t) i] = juce::jlimit (0, net::maxStreams, (int) list->getReference (i));
+        if (const auto* list = saved["views"].getArray(); list != nullptr && list->size() == numCells())
+            for (int i = 0; i < numCells(); ++i)
+                views[(size_t) i] = juce::jlimit (0, scope::numPerspectives - 1, (int) list->getReference (i));
 
         if (const auto* b = saved["window"].getArray(); b != nullptr && b->size() == 4)
             windowBounds = { (int) (*b)[0], (int) (*b)[1], juce::jmax (320, (int) (*b)[2]), juce::jmax (200, (int) (*b)[3]) };
@@ -67,10 +73,15 @@ struct WallConfig
         for (int stream : streams)
             list.add (stream);
 
+        juce::Array<juce::var> viewList;
+        for (int view : views)
+            viewList.add (view);
+
         juce::DynamicObject::Ptr root = new juce::DynamicObject();
         root->setProperty ("cols", cols);
         root->setProperty ("rows", rows);
         root->setProperty ("streams", list);
+        root->setProperty ("views", viewList);
         root->setProperty ("window", juce::Array<juce::var> { windowBounds.getX(), windowBounds.getY(),
                                                               windowBounds.getWidth(), windowBounds.getHeight() });
         root->setProperty ("fullscreen", fullScreen);
@@ -111,6 +122,8 @@ public:
         streamBox.addItem ("Off", 1);
         for (int i = 1; i <= net::maxStreams; ++i)
             streamBox.addItem ("Stream " + juce::String (i), i + 1);
+        for (int i = 0; i < scope::numPerspectives; ++i)
+            viewBox.addItem (scope::perspectiveNames[i], i + 1);
 
         colsLabel.setText ("Columns", juce::dontSendNotification);
         rowsLabel.setText ("Rows", juce::dontSendNotification);
@@ -121,11 +134,12 @@ public:
 
         colsBox.onChange = rowsBox.onChange = [this] { setGrid (colsBox.getSelectedId(), rowsBox.getSelectedId()); };
         streamBox.onChange = [this] { setCellStream (selected, streamBox.getSelectedId() - 1); };
+        viewBox.onChange = [this] { setCellView (selected, viewBox.getSelectedId() - 1); };
         testButton.onClick = [this] { receiver.testTone.store (testButton.getToggleState()); };
         fullScreenButton.onClick = [this] { actions.toggleFullScreen(); };
 
         for (juce::Component* c : std::initializer_list<juce::Component*> { &colsLabel, &colsBox, &rowsLabel, &rowsBox, &cellLabel,
-                                                                            &streamBox, &testButton, &fullScreenButton, &hint })
+                                                                            &streamBox, &viewBox, &testButton, &fullScreenButton, &hint })
         {
             c->setWantsKeyboardFocus (false);   // the keys stay with the window
             bar.addAndMakeVisible (c);
@@ -185,7 +199,10 @@ public:
             }
 
             g.setColour (juce::Colours::white.withAlpha (i == selected ? 0.95f : 0.6f));
-            g.drawText (stream > 0 ? "Stream " + juce::String (stream) : "Empty", caption, juce::Justification::centredLeft);
+            const int view = config.views[(size_t) i];
+            g.drawText (stream == 0 ? juce::String ("Empty")
+                                    : "Stream " + juce::String (stream) + (view > 0 ? juce::String ("  ") + scope::perspectiveNames[view] : juce::String()),
+                        caption, juce::Justification::centredLeft);
             g.setColour (statusColour);
             g.drawText (status, caption, juce::Justification::centredRight);
         }
@@ -207,6 +224,7 @@ public:
             row.removeFromLeft (12);
             place (cellLabel, 50);
             place (streamBox, 110);
+            place (viewBox, 86);
             row.removeFromLeft (12);
             place (testButton, 96);
             place (fullScreenButton, 130);
@@ -253,6 +271,7 @@ public:
             case 'q': actions.quit(); return true;
             case 's': setSetupVisible (! setupVisible); return true;
             case 't': receiver.testTone.store (! receiver.testTone.load()); return true;
+            case 'v': if (setupVisible) setCellView (selected, (config.views[(size_t) selected] + 1) % scope::numPerspectives); return true;
             case '+':
             case '=': if (setupVisible) setCellStream (selected, juce::jmin (net::maxStreams, stream + 1)); return true;
             case '-': if (setupVisible) setCellStream (selected, juce::jmax (0, stream - 1)); return true;
@@ -390,6 +409,9 @@ private:
             addAndMakeVisible (*cell.scope);
             updateCursor();
         }
+
+        if (cell.scope != nullptr)
+            cell.scope->setPerspective ((scope::Perspective) config.views[(size_t) index]);
     }
 
     void setGrid (int cols, int rows)
@@ -415,11 +437,23 @@ private:
         actions.configChanged();
     }
 
+    void setCellView (int index, int view)
+    {
+        if (config.views[(size_t) index] == view)
+            return;
+
+        config.views[(size_t) index] = view;
+        rebuildCell (index);
+        select (index);
+        actions.configChanged();
+    }
+
     void select (int index)
     {
         selected = index;
         cellLabel.setText ("Cell " + juce::String (index + 1), juce::dontSendNotification);
         streamBox.setSelectedId (cells[(size_t) index].stream + 1, juce::dontSendNotification);
+        viewBox.setSelectedId (config.views[(size_t) index] + 1, juce::dontSendNotification);
         repaint();
     }
 
@@ -486,7 +520,7 @@ private:
 
     juce::Component bar;
     juce::Label colsLabel, rowsLabel, cellLabel, hint;
-    juce::ComboBox colsBox, rowsBox, streamBox;
+    juce::ComboBox colsBox, rowsBox, streamBox, viewBox;
     juce::ToggleButton testButton { "Test tone" };
     juce::TextButton fullScreenButton;
 
@@ -518,7 +552,7 @@ public:
                          "  --name NAME      name announced on the network (default: host name)\n"
                          "  --config FILE    where the settings are kept\n"
                          "  --test           start with the local test tone on\n"
-                         "Keys: F full screen, Esc leave it, Tab/S setup bar, arrows select a cell, +/- its stream, T test tone, Q quit\n";
+                         "Keys: F full screen, Esc leave it, Tab/S setup bar, arrows select a cell, +/- its stream, V its view, T test tone, Q quit\n";
             quit();
             return;
         }
