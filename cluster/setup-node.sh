@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
     build-essential cmake git pkg-config ca-certificates \
-    xserver-xorg xinit x11-xserver-utils \
+    xserver-xorg xserver-xorg-legacy xinit x11-xserver-utils \
     libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxrender-dev libxcomposite-dev \
     libfreetype-dev libfontconfig1-dev libgl1-mesa-dev mesa-utils
 
