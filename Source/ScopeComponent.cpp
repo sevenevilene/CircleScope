@@ -274,8 +274,19 @@ namespace
 
     // The field on a plane. The amplitude is how bright it is, it fades
     // with distance from the source, and the sources are added as light.
+    //
+    // A spectrogram is drawn here too. It is no field: each source has a
+    // picture (128 rows of the spectra texture, from 128k on: a row per
+    // pitch, lowest first, and along it 128 moments, the newest first),
+    // and shows it on the square of its own plane, now at the right edge
+    // and the oldest at the left, low pitches at the bottom. bandLevel
+    // [8k] is how far time has gone on since the newest moment, in steps
+    // of the picture. A pitch has its colour of the scale, and how loud it
+    // is goes through the curve of what is seen.
     const juce::String fieldFragmentShader = juce::String (fieldCommon) + R"(
         uniform float alphaScale;
+        uniform float spectrum;       // 1: a spectrogram
+        uniform sampler2D spectra;
         varying vec3 where;
 
         void main()
@@ -284,7 +295,31 @@ namespace
             // strong each source is here.
             vec4 light = vec4 (0.0);
             float weight = 0.0;
-            if (interfere > 0.5)
+            if (spectrum > 0.5)
+            {
+                for (int k = 0; k < 8; ++k)
+                {
+                    if (k >= count)
+                        break;
+
+                    vec3 q = sourceAxes[k] * (where - sourceAt[k]);
+                    if (abs (q.z) < 0.002 && abs (q.x) <= 1.0 && abs (q.y) <= 1.0)
+                    {
+                        float ago = clamp ((1.0 - q.x) * 63.5 - bandLevel[k * 8], 0.0, 127.0);
+                        float up = 0.5 + 0.5 * q.y;
+                        float row = float (k) * 128.0 + clamp (up * 128.0, 0.5, 127.5);
+                        // It stands nearly still, so the afterglow and the
+                        // beam both have all of it: half each.
+                        float a = 0.5 * seen (texture2D (spectra, vec2 ((ago + 0.5) / 128.0, row / 1024.0)).r);
+
+                        float place = clamp (up * 8.0 - 0.5, 0.0, 7.0);
+                        int b = int (min (floor (place), 6.0));
+                        light += a * vec4 (mix (bandColour[b], bandColour[b + 1], place - float (b)), colourAlpha);
+                        weight += a;
+                    }
+                }
+            }
+            else if (interfere > 0.5)
             {
                 vec4 colour;
                 weight = seen (together (where, colour));
@@ -567,8 +602,9 @@ public:
     {
         for (auto* target : { &accumTarget, &currentTarget, &blurTempTarget, &blurTarget, &volumeTarget })
             target->release();
-        if (fieldTexture != 0)
-            glDeleteTextures (1, &fieldTexture);
+        for (auto texture : { fieldTexture, spectrumTexture })
+            if (texture != 0)
+                glDeleteTextures (1, &texture);
     }
 
     // Brings accumTarget, currentTarget and blurTarget up to date.
@@ -591,6 +627,7 @@ private:
     RenderTarget volumeTarget;                       // the field as a volume, at half resolution
 
     GLuint fieldTexture = 0;                         // the sources' waves, one row each
+    GLuint spectrumTexture = 0;                      // or their spectrograms, one under the other
     const scope::Frame* fieldUploaded = nullptr;     // the frame whose waves are in it
     std::vector<float> fieldPixels;
 };
@@ -1079,7 +1116,8 @@ void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& came
         uploadField();
         const auto placement = placePanel (layout, 0, w, h, margin, view, false);
 
-        if (look.fieldVolume && owner.volumeShader != nullptr)
+        // A spectrogram is flat: it is on its plane, volume or not.
+        if (look.fieldVolume && owner.volumeShader != nullptr && ! frame->spectrum)
         {
             // The volume once, at half size, then that onto both buffers.
             volumeTarget.ensure (w / 2, h / 2);
@@ -1154,15 +1192,21 @@ void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& came
     }
 }
 
-// Puts the mirrored sound of the frame's sources in the texture, one row each.
+// Puts the mirrored sound of the frame's sources in the texture, one row
+// each. Their spectrograms, which are as many values but in another shape,
+// have a texture of their own.
 void ScopeComponent::LayerRenderer::uploadField()
 {
-    constexpr int across = scope::fieldSamples, rows = scope::maxFieldSources * scope::fieldBands;
+    const bool spectrum = frame->spectrum;
+    const int perSource = scope::fieldSamples * scope::fieldBands;
+    const int across = spectrum ? scope::spectrumSize : scope::fieldSamples;
+    const int rows = scope::maxFieldSources * perSource / across;
+    auto& texture = spectrum ? spectrumTexture : fieldTexture;
 
-    if (fieldTexture == 0)
+    if (texture == 0)
     {
-        glGenTextures (1, &fieldTexture);
-        glBindTexture (GL_TEXTURE_2D, fieldTexture);
+        glGenTextures (1, &texture);
+        glBindTexture (GL_TEXTURE_2D, texture);
         glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA16F, across, rows, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -1178,13 +1222,12 @@ void ScopeComponent::LayerRenderer::uploadField()
     fieldPixels.assign ((size_t) (across * rows), 0.0f);
     for (int k = 0; k < juce::jmin (frame->numSources, scope::maxFieldSources); ++k)
     {
-        // A source's rows: its bands of pitch.
+        // A source's rows: its bands of pitch, or its picture.
         const auto& samples = frame->sources[k].samples;
-        std::copy_n (samples.begin(), juce::jmin (samples.size(), (size_t) (across * scope::fieldBands)),
-                     fieldPixels.begin() + k * across * scope::fieldBands);
+        std::copy_n (samples.begin(), juce::jmin (samples.size(), (size_t) perSource), fieldPixels.begin() + k * perSource);
     }
 
-    glBindTexture (GL_TEXTURE_2D, fieldTexture);
+    glBindTexture (GL_TEXTURE_2D, texture);
     glPixelStorei (GL_UNPACK_ALIGNMENT, 4);
     glTexSubImage2D (GL_TEXTURE_2D, 0, 0, 0, across, rows, GL_RED, GL_FLOAT, fieldPixels.data());
     glBindTexture (GL_TEXTURE_2D, 0);
@@ -1243,6 +1286,9 @@ void ScopeComponent::LayerRenderer::drawField (const PanelPlacement& p, const sc
     auto& shader = *owner.fieldShader;
     useSources (shader);
     shader.setUniform ("alphaScale", alphaScale);
+    shader.setUniform ("spectrum", frame->spectrum ? 1.0f : 0.0f);
+    shader.setUniform ("spectra", (GLint) 1);
+    bindTexture (1, spectrumTexture);
     shader.setUniform ("transform", p.scaleX, p.scaleY, p.offsetX, p.offsetY);
     shader.setUniformMat3 ("camera", camera.turn.m, 1, GL_FALSE);
     shader.setUniform ("cameraShift", camera.shift.x, camera.shift.y, camera.shift.z);
@@ -1267,6 +1313,7 @@ void ScopeComponent::LayerRenderer::drawField (const PanelPlacement& p, const sc
         shader.setUniform ("origin", s.at.x, s.at.y, s.at.z);
         owner.drawVertices (owner.vertices, position, -1);
     }
+    bindTexture (1, 0);
     bindTexture (0, 0);
 }
 

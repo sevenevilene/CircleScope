@@ -54,6 +54,11 @@
 //                a distance d from it you find the sound of d Windows ago,
 //                and a tone makes rings (shells, in space). Locked, they
 //                move outward slowly.
+//                Or the shape is a Spectrogram, which is no field in
+//                space: the instance's plane shows how loud each pitch
+//                was at each moment of the last Field span seconds, time
+//                across and pitch up. The analyser keeps the picture and
+//                adds to it as the sound comes in.
 //                The sound is handed on split into bands of pitch, so
 //                the scope can colour each by its pitch. With Field EQ on
 //                it lets through at every distance from the instance only
@@ -112,8 +117,10 @@ private:
         float fieldSpeed;          // of the locked picture, as a fraction of real time
         bool fieldRings;
         bool fieldEq;
-        float fieldPolarity;       // what the instance's wave is multiplied by, -1..1
         float fieldEqWidth;        // octaves
+        float fieldPolarity;       // what the instance's wave is multiplied by, -1..1
+        bool fieldSpectrum;        // a spectrogram, not a field in space
+        float fieldSpan;           // which covers this many seconds
     };
 
     // Sample range of the analysis block that gets drawn this frame.
@@ -122,6 +129,7 @@ private:
     static constexpr int fftOrder = 14;
     static constexpr int blockSize = 1 << fftOrder;   // 16384 samples
     static constexpr int edgeMargin = 1024;          // skip FFT edge artefacts
+    static constexpr int spectrumOrder = 12;         // of the FFT a spectrogram is made with: 4096 samples
 
     // One instance's audio, analysed.
     struct Signal
@@ -147,6 +155,14 @@ private:
         float gain[4] { 1.0f, 1.0f, 1.0f, 1.0f };        // per Curve
         float fieldGain = 1.0f;                          // of its wave in the Field mode
         size_t blockStart[2] {};                         // absolute position of each block's first sample
+
+        // The spectrogram so far: column c holds the sound from c to c + 1
+        // times spectrumHop samples on the instance's ring, as
+        // scope::spectrumSize pitches, and is kept at c modulo
+        // scope::spectrumSize.
+        std::vector<float> spectrum;
+        double spectrumHop = 0.0;
+        juce::int64 spectrumNext = 0;                    // the first column still to be made
     };
 
     struct Point3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
@@ -162,6 +178,8 @@ private:
     void updateCorrelation (const Range&);
     float updateGain (Signal&, Curve, const Range&);
     void addField (scope::Frame&, const Range&);
+    void addSpectrogram (scope::Frame&);
+    void addToSpectrum (const Signal&, int from, float* column, bool first);
     void addCurve (scope::Frame::Panel&, Curve, const Range&, std::optional<juce::Colour> colourOverride);
 
     static Settings readSettings (const ScopeSource&);
@@ -172,6 +190,8 @@ private:
     const Partners partners;
 
     juce::dsp::FFT fft { fftOrder };
+    juce::dsp::FFT spectrumFft { spectrumOrder }, spectrumLongFft { spectrumOrder + 1 };   // the long one for low pitches
+    std::vector<float> spectrumWindow;               // their windows, one after the other
     scope::FramePool pool;
     std::vector<std::unique_ptr<Signal>> signals;    // [0] is the instance's own
     std::vector<std::complex<float>> timeScratch, freqScratch;

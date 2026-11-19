@@ -188,7 +188,9 @@ public:
         setUp (alpha, "alpha", "Alpha", " %");
         alpha.slider.setTooltip ("The alpha of the colours, in every mode. For curves and the field on its planes it is how much of their light is added; in the field as a volume it is how much a dot hides what is behind it, without making it dimmer");
         fieldShapeBox.addItemList (juce::StringArray::fromTokens (scope::paramTable[scope::pFieldShape].choices, "|", ""), 1);
-        fieldShapeBox.setTooltip ("Field mode: Dots stand still and pulse, large for low notes and fine for high ones. Rings spread out from this instance's position, like ripples");
+        fieldShapeBox.setTooltip ("Field mode: Dots stand still and pulse, large for low notes and fine for high ones. Rings spread out from this instance's position, like ripples. Spectrogram is a flat picture on this instance's plane instead: time across, pitch up, bright where the sound is loud");
+        setUp (fieldSpan, "fieldspan", "Span", " s");
+        fieldSpan.slider.setTooltip ("Field mode, as a Spectrogram: how many seconds of sound the picture holds, from now at its right edge back to its left");
         setUp (fieldPolarity, "fieldpolarity", "Polarity", "");
         setUp (fieldSaturation, "fieldsaturation", "Saturation", " %");
         fieldPolarity.slider.setTooltip ("Field mode: what this instance's wave is multiplied by before it goes into the field. 1 is as it is, -1 turned over, 0 none of it. With Interfere on and two instances at the same place, 1 and 1 shows what is left of them in mono, 1 and -1 only where they differ");
@@ -243,6 +245,7 @@ public:
 
         modeBox.onChange = [this] { updateVisibility(); };
         fieldEqButton.onClick = [this] { updateVisibility(); };
+        fieldShapeBox.onChange = [this] { updateVisibility(); };
         updateVisibility();
 
         startTimerHz (8);
@@ -255,7 +258,9 @@ public:
 
     int getPreferredHeight() const
     {
-        return 12 + rowHeight * (9 + (showsSwing ? 1 : 0) + (showsField ? 5 : 0)) + (showsField ? 2 * curveHeight : 0) + (showsCurve ? curveHeight : 0);
+        const int fieldRows = ! showsField ? 0 : showsSpectrum ? 1 : 5;
+        const int curves = ! showsField ? 0 : showsSpectrum ? 1 : showsCurve ? 3 : 2;
+        return 12 + rowHeight * (9 + (showsSwing ? 1 : 0) + fieldRows) + curves * curveHeight;
     }
 
     std::function<void()> onHeightChanged;
@@ -326,8 +331,10 @@ public:
                 ls->slider.setBounds (cell.reduced (4, 0));
             }
         }
-        else
+        else if (window.slider.isVisible())
             placeRow (nextRow(), { &window, &afterglow, &alpha });
+        else
+            placeRow (nextRow(), { &afterglow, &alpha });
         placeRow (nextRow(), { &brightness, &contrast, &blur });
 
         // Row 4: band limits, then how this instance layers in the third cell.
@@ -367,21 +374,29 @@ public:
         // Where the plane's centre is.
         placeRow (nextRow(), { &posX, &posY, &posZ });
 
-        // The Field mode.
+        // The Field mode: its shape first, since the rest goes by it.
         if (showsField)
+        {
+            auto shapeRow = nextRow();
+            auto shape = thirdOf (shapeRow, 0);
+            fieldShapeBox.setBounds (shape.removeFromLeft (120).reduced (4, 0));
+            fieldVolumeButton.setBounds (shape.removeFromLeft (90).reduced (4, 0));
+            placeRow (fromSecondThird (shapeRow), { showsSpectrum ? &fieldSpan : &fieldDensity });
+        }
+
+        if (showsField && ! showsSpectrum)
         {
             auto fadeRow = nextRow();
             placeRow (fadeRow, { &fieldFade, &fieldSpeed });
             fieldLockButton.setBounds (thirdOf (fadeRow, 2).removeFromLeft (150).reduced (4, 0));
             fadeCurve.setBounds (controls.removeFromTop (curveHeight).reduced (4, 3));
+        }
 
-            auto volumeRow = nextRow();
-            auto shape = thirdOf (volumeRow, 0);
-            fieldShapeBox.setBounds (shape.removeFromLeft (120).reduced (4, 0));
-            fieldVolumeButton.setBounds (shape.removeFromLeft (90).reduced (4, 0));
-            placeRow (fromSecondThird (volumeRow), { &fieldDensity });
+        if (showsField)
             showCurve.setBounds (controls.removeFromTop (curveHeight).reduced (4, 3));
 
+        if (showsField && ! showsSpectrum)
+        {
             placeRow (nextRow(), { &fieldFocus, &fieldAperture });
 
             // How the instance's wave goes in, and how the instances' meet.
@@ -426,19 +441,24 @@ private:
     // Shows the controls the mode in use has a use for, and no others:
     // Delay belongs to Delay embed, the swing controls to Swing, the field
     // controls to Field (its curve only with the EQ on), and Colour and
-    // Layout to the modes that draw curves.
+    // Layout to the modes that draw curves. In the Field mode it goes by
+    // the shape too: a Spectrogram has its span and the curve of what is
+    // seen, and none of what makes a field in space, nor the Window.
     void updateVisibility()
     {
         const auto mode = (scope::Mode) juce::jlimit (0, 4, modeBox.getSelectedId() - 1);
         const bool swing = mode == scope::Mode::swing, field = mode == scope::Mode::field;
-        const bool curve = field && fieldEqButton.getToggleState();
-        const int state = (int) mode + (curve ? 16 : 0);
+        const bool spectrum = field && fieldShapeBox.getSelectedId() == 3;
+        const bool space = field && ! spectrum;
+        const bool curve = space && fieldEqButton.getToggleState();
+        const int state = (int) mode + (curve ? 16 : 0) + (spectrum ? 32 : 0);
         if (state == shownState)
             return;
         shownState = state;
         showsSwing = swing;
         showsField = field;
         showsCurve = curve;
+        showsSpectrum = spectrum;
 
         auto show = [] (bool visible, std::initializer_list<juce::Component*> components)
         {
@@ -448,13 +468,15 @@ private:
         show (mode == scope::Mode::delayEmbed, { &delay.label, &delay.slider });
         show (! field, { &colourBox, &layoutBox });
         show (swing, { &swingLabel, &swingMotionBox, &swingRate.label, &swingRate.slider, &swingSyncButton });
-        show (field, { &fieldFade.label, &fieldFade.slider, &fieldSpeed.label, &fieldSpeed.slider, &fieldLockButton,
-                       &fieldShapeBox, &fieldVolumeButton, &fieldDensity.label, &fieldDensity.slider,
+        show (! spectrum, { &window.label, &window.slider });
+        show (field, { &fieldShapeBox, &showCurve });
+        show (spectrum, { &fieldSpan.label, &fieldSpan.slider });
+        show (space, { &fieldFade.label, &fieldFade.slider, &fieldSpeed.label, &fieldSpeed.slider, &fieldLockButton, &fadeCurve,
+                       &fieldVolumeButton, &fieldDensity.label, &fieldDensity.slider,
                        &fieldFocus.label, &fieldFocus.slider, &fieldAperture.label, &fieldAperture.slider,
                        &fieldPolarity.label, &fieldPolarity.slider, &fieldSaturation.label, &fieldSaturation.slider, &fieldInterfereButton,
                        &fieldEqButton, &fieldEqWidth.label, &fieldEqWidth.slider });
         show (curve, { &fieldCurve });
-        show (field, { &fadeCurve, &showCurve });
 
         resized();
         if (onHeightChanged)
@@ -522,8 +544,8 @@ private:
     CircleScopeProcessor& processor;
     juce::Component* trailingComponent;
     const bool isTranslucent;
-    int shownState = -1;                             // the mode, and whether the EQ's curve shows
-    bool showsSwing = false, showsField = false, showsCurve = false;
+    int shownState = -1;                             // the mode, the field's shape, and whether the EQ's curve shows
+    bool showsSwing = false, showsField = false, showsCurve = false, showsSpectrum = false;
 
     juce::ComboBox modeBox, colourBox, layoutBox, blendBox, layerBox, swingMotionBox, planeBox, fieldShapeBox;
     juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" }, divideButton { "Divide" },
@@ -539,7 +561,7 @@ private:
 
     LabelledSlider window, delay, afterglow, brightness, contrast, blur, lowCut, highCut, swingRate,
                    planeRotX, planeRotY, planeRotZ, viewYaw, viewPitch, viewRoll,
-                   posX, posY, posZ, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture, fieldPolarity, fieldSaturation, alpha;
+                   posX, posY, posZ, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture, fieldPolarity, fieldSaturation, fieldSpan, alpha;
 
     std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, blendAttachment, layerAttachment, swingMotionAttachment, planeAttachment, fieldShapeAttachment;
     std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment, swingSyncAttachment, fieldLockAttachment, fieldVolumeAttachment, fieldInterfereAttachment, fieldEqAttachment;

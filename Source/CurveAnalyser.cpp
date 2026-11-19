@@ -9,6 +9,17 @@ CurveAnalyser::CurveAnalyser (const ScopeSource& own, scope::CurveFeed& feedToFi
     bandFreq.resize ((size_t) blockSize);
     bandTime.resize ((size_t) blockSize);
     wave.resize ((size_t) blockSize);
+
+    // The windows of a spectrogram's spectra (Blackman-Harris: next to a
+    // loud pitch nothing shows that is not there), the short one and then
+    // the long, each scaled so a full-scale tone comes out as 1.
+    for (int length : { 1 << spectrumOrder, 2 << spectrumOrder })
+        for (int i = 0; i < length; ++i)
+        {
+            const double x = juce::MathConstants<double>::twoPi * i / length;
+            const double w = 0.35875 - 0.48829 * std::cos (x) + 0.14128 * std::cos (2.0 * x) - 0.01168 * std::cos (3.0 * x);
+            spectrumWindow.push_back ((float) (w * 2.0 / (0.35875 * length)));
+        }
     startThread();
 }
 
@@ -54,10 +65,12 @@ CurveAnalyser::Settings CurveAnalyser::readSettings (const ScopeSource& src)
              get (pFieldFade) * 0.01f,
              get (pFieldLock) > 0.5f,
              get (pFieldSpeed) * 0.01f,
-             get (pFieldShape) > 0.5f,
+             juce::roundToInt (get (pFieldShape)) == 1,
              get (pFieldEq) > 0.5f,
              get (pFieldEqWidth),
-             juce::jlimit (-1.0f, 1.0f, get (pFieldPolarity)) };
+             juce::jlimit (-1.0f, 1.0f, get (pFieldPolarity)),
+             juce::roundToInt (get (pFieldShape)) == 2,
+             juce::jlimit (paramTable[pFieldSpan].min, paramTable[pFieldSpan].max, get (pFieldSpan)) };
 }
 
 //==============================================================================
@@ -326,6 +339,12 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
 {
     const auto& lead = *signals[0];
     const auto& s = lead.settings;
+    if (s.fieldSpectrum)
+    {
+        addSpectrogram (frame);
+        return;
+    }
+
     auto mono = [] (const Signal& sig, int i) { return 0.5f * (sig.block[0][(size_t) i] + sig.block[1][(size_t) i]); };
 
     // The moment needs sound before it, as far as the field reaches (for
@@ -465,6 +484,158 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
             for (int j = 0; j < scope::fieldSamples; ++j)
                 to[j] = heard ? turned * to[j] / bandPeak : 0.0f;
         }
+    }
+}
+
+// The Field mode's Spectrogram shape: every signal gives a picture of how
+// loud each pitch was at each moment of the last Field span seconds. It is
+// kept from frame to frame, in columns of a fixed length on the signal's
+// ring, and each frame the columns the new sound has completed are added:
+// a column is the loudest of a few short spectra spread over it, so that
+// nothing in it is missed however long it is. Sound that came and went
+// while no frames were asked for is left black.
+void CurveAnalyser::addSpectrogram (scope::Frame& frame)
+{
+    constexpr int size = scope::spectrumSize, fftSize = 1 << spectrumOrder;
+    const auto& lead = *signals[0];
+
+    frame.layout = Layout::mono;
+    frame.flat = false;
+    frame.spectrum = true;
+    for (int i = 0; i < scope::fieldCurvePoints; ++i)
+        frame.show[i] = juce::jlimit (0.0f, 1.0f, lead.source.showCurve[i].load());
+    for (int band = 0; band < scope::fieldBands; ++band)
+        colours.colourAt (scope::ColourScale::placeOfBand (band), frame.bandColour[band]);
+
+    frame.numSources = (int) juce::jmin (signals.size(), (size_t) scope::maxFieldSources);
+
+    for (int k = 0; k < frame.numSources; ++k)
+    {
+        auto& sig = *signals[(size_t) k];
+        auto& out = frame.sources[k];
+        out.plane = sig.settings.plane;
+        out.at = sig.settings.at;
+        out.fade = 0.0f;
+        std::fill (std::begin (out.fadeCurve), std::end (out.fadeCurve), 1.0f);
+        std::fill (std::begin (out.level), std::end (out.level), 0.0f);
+
+        const double hop = juce::jmax (1.0, (double) lead.settings.fieldSpan * sig.settings.sampleRate / (double) size);
+        const bool fresh = sig.spectrum.size() != (size_t) (size * size) || ! juce::exactlyEqual (hop, sig.spectrumHop);
+        if (fresh)
+        {
+            sig.spectrum.assign ((size_t) (size * size), 0.0f);
+            sig.spectrumHop = hop;
+        }
+
+        // The last sample a spectrum may reach, and so the newest column
+        // that is complete.
+        const auto start = (juce::int64) sig.blockStart[0];
+        const double place = (double) (start + blockSize - edgeMargin) / hop - 1.0;
+        const auto newest = (juce::int64) std::floor (place);
+        out.level[0] = (float) (place - (double) newest);
+
+        if (fresh || sig.spectrumNext > newest + 1 || newest - sig.spectrumNext >= size)
+        {
+            std::fill (sig.spectrum.begin(), sig.spectrum.end(), 0.0f);
+            sig.spectrumNext = newest - size + 1;
+        }
+
+        auto columnOf = [&sig] (juce::int64 c) { return sig.spectrum.data() + (size_t) (((c % size) + size) % size) * (size_t) size; };
+        const int spectra = juce::jlimit (1, 8, (int) std::ceil (hop / (double) (fftSize / 2)));
+
+        for (auto c = sig.spectrumNext; c <= newest; ++c)
+        {
+            auto* column = columnOf (c);
+            std::fill_n (column, size, 0.0f);
+
+            bool first = true;
+            for (int i = 0; i < spectra; ++i)
+            {
+                // Each spectrum's samples have to be in the block, and
+                // those of the last end with the column.
+                const double centre = ((double) c + ((double) i + 0.5) / (double) spectra) * hop;
+                const auto from = juce::jmin ((juce::int64) std::llround (centre) - fftSize / 2,
+                                              (juce::int64) std::llround ((double) (c + 1) * hop) - fftSize) - start;
+                if (from < edgeMargin || from + fftSize > blockSize - edgeMargin)
+                    continue;
+
+                addToSpectrum (sig, (int) from, column, first);
+                first = false;
+            }
+        }
+        sig.spectrumNext = newest + 1;
+
+        out.samples.resize ((size_t) (size * size));
+        for (int age = 0; age < size; ++age)
+        {
+            const auto* column = columnOf (newest - age);
+            for (int row = 0; row < size; ++row)
+                out.samples[(size_t) (row * size + age)] = column[row];
+        }
+    }
+}
+
+// The spectrum of the signal's sound in the samples of its block from one
+// on, as the pitches of a spectrogram's column: each 0..1, from
+// spectrumFloorDb to full scale, squared so the quiet stays dark. Added to
+// what the column has (the louder stays), or put there as its first.
+//
+// Low pitches lie closer together than a short spectrum can tell apart, so
+// those below spectrumSplitHz come from one of twice the length, ending at
+// the same sample, where the block has that much sound.
+void CurveAnalyser::addToSpectrum (const Signal& sig, int from, float* column, bool first)
+{
+    constexpr int size = scope::spectrumSize, fftSize = 1 << spectrumOrder;
+    constexpr double spectrumSplitHz = 500.0;
+
+    // How strong each bin is, for a spectrum of "length" samples that ends where the short one does.
+    auto strengths = [&] (juce::dsp::FFT& transform, int length, float* loud)
+    {
+        const int begin = from + fftSize - length;
+        const auto* window = spectrumWindow.data() + (length == fftSize ? 0 : fftSize);
+        for (int i = 0; i < length; ++i)
+        {
+            const auto at = (size_t) (begin + i);
+            timeScratch[(size_t) i] = { 0.5f * (sig.block[0][at] + sig.block[1][at]) * window[i], 0.0f };
+        }
+        transform.perform (timeScratch.data(), freqScratch.data(), false);
+        for (int bin = 0; bin <= length / 2; ++bin)
+            loud[bin] = std::abs (freqScratch[(size_t) bin]);
+    };
+
+    auto* loudShort = wave.data();
+    auto* loudLong = wave.data() + fftSize;
+    const bool hasLong = from + fftSize - 2 * fftSize >= edgeMargin;
+    strengths (spectrumFft, fftSize, loudShort);
+    if (hasLong)
+        strengths (spectrumLongFft, 2 * fftSize, loudLong);
+
+    // A pitch covers a stretch of bins: less than one of them low down,
+    // where it is read between two, and many high up, where it is the
+    // strongest of them.
+    const double octaves = (double) scope::fieldBands * (double) scope::fieldBandOctaves;
+    auto hzOf = [octaves] (double row) { return 20.0 * std::pow (2.0, octaves * row / (double) size); };
+
+    for (int row = 0; row < size; ++row)
+    {
+        const bool useLong = hasLong && hzOf ((double) row + 0.5) < spectrumSplitHz;
+        const int length = useLong ? 2 * fftSize : fftSize;
+        const auto* loud = useLong ? loudLong : loudShort;
+        const double binsPerHz = (double) length / sig.settings.sampleRate;
+        const double low = hzOf ((double) row) * binsPerHz, high = hzOf ((double) row + 1.0) * binsPerHz, mid = hzOf ((double) row + 0.5) * binsPerHz;
+        float strength = 0.0f;
+
+        if (mid < (double) (length / 2))
+        {
+            const int under = (int) mid;
+            strength = loud[under] + (loud[under + 1] - loud[under]) * (float) (mid - (double) under);
+            for (int bin = (int) std::ceil (low); bin <= juce::jmin ((int) high, length / 2); ++bin)
+                strength = juce::jmax (strength, loud[bin]);
+        }
+
+        const float db = 20.0f * std::log10 (juce::jmax (strength, 1.0e-9f));
+        const float level = juce::jlimit (0.0f, 1.0f, 1.0f - db / scope::spectrumFloorDb);
+        column[row] = first ? level * level : juce::jmax (column[row], level * level);
     }
 }
 

@@ -21,6 +21,8 @@ namespace scope
     constexpr int fieldSamples = 2048;        // of each source's wave, from now back in time
     constexpr float fieldMaxReach = 4.0f;     // how far along its axes a field is ever drawn, in plane units
 
+    static_assert (spectrumSize * spectrumSize == fieldSamples * fieldBands, "a spectrogram travels as a source's samples");
+
     inline const juce::Colour leftColour (0xff1d9e75), rightColour (0xffd85a30), goniometerColour (0xff7f77dd);
 
     // A point of a curve, in the scene's coordinates about its panel's
@@ -68,6 +70,13 @@ namespace scope
     // There are fieldBands such runs, one after the other: the sound split
     // into bands of pitch, lowest first, so each can have its own colour.
     // Every band fills -1..1 by itself, and level says how strong it is.
+    //
+    // In a spectrogram (Frame::spectrum) the samples are a picture
+    // instead: spectrumSize rows, one per pitch, lowest first, each of
+    // spectrumSize moments, the newest first, with how loud the pitch was
+    // then, 0..1 from spectrumFloorDb to full scale (squared). level[0] is how far
+    // time has gone on since the newest moment, 0..1 of the step between
+    // two, so the picture can move smoothly.
     struct FieldSource
     {
         Mat3 plane;
@@ -99,6 +108,7 @@ namespace scope
         // A wave field instead of curves, when there are sources.
         int numSources = 0;
         bool rings = false;                      // the sound spreads from the sources as rings; else it stands, as dots
+        bool spectrum = false;                   // neither: a spectrogram on each source's plane
         FieldSource sources[maxFieldSources];
         float reach = 1.0f;                      // the distance the samples cover, in plane units
         float bandColour[fieldBands][3] {};      // each band's colour on the scene's scale (ColourScale.h)
@@ -115,6 +125,7 @@ namespace scope
             numGuides = 0;
             numSources = 0;
             rings = false;
+            spectrum = false;
             eq = false;
             reach = 1.0f;
             for (auto& panel : panels)

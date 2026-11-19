@@ -47,6 +47,14 @@ Each channel is drawn as a 2D trajectory in its own square:
   see-through, like bubbles inside each other, since a solid shell would
   hide everything in it.
 
+  Or it can be a Spectrogram, which is no field in space but a flat
+  picture on the square of the instance's plane: time across (now at the
+  right edge, **Span** seconds ago at the left), pitch up (20 Hz at the
+  bottom, 20 kHz at the top), and each point as bright as that pitch was
+  loud then, from -72 dB to full scale, in the pitch's colour of the
+  scale. The "Seen" curve says how bright each loudness is. Lock, speed,
+  fade, polarity, Interfere, the EQ and Volume do nothing to it.
+
   The real swing is far too fast for a screen, so **Lock to wave** works
   like a stroboscope: it takes the picture at the same point of the wave
   every frame, moved on a little each time, and the dots pulse in slow

@@ -37,7 +37,10 @@
 // them instead, the places where the wave is still, like the sand on a
 // Chladni plate. Field shape is what the sound
 // makes in space: dots that stand still, or rings that spread from the
-// instance's position. Field EQ lets only a range of pitch into the field
+// instance's position. Or it is a Spectrogram: no field in space but a
+// picture on the instance's plane, time across its square (now at the
+// right, Field span seconds ago at the left) and pitch up it (20 Hz to
+// 20 kHz), each point as bright as that pitch was loud then. Field EQ lets only a range of pitch into the field
 // at each distance from the instance's position: which pitch is a curve
 // the user draws (not a parameter: ScopeSource::fieldCurve), and Field EQ
 // width is how wide the range is. Field aperture gives the volume a depth
@@ -68,7 +71,7 @@ namespace scope
         pBlend, pLayer, pDivide, pSwingMotion, pSwingRate, pSwingSync,
         pPlane, pPlaneRotX, pPlaneRotY, pPlaneRotZ, pViewYaw, pViewPitch, pViewRoll,
         pPosX, pPosY, pPosZ, pFieldFade, pFieldLock, pFieldSpeed, pFieldVolume, pFieldDensity, pFieldShape, pFieldEq, pFieldEqWidth, pFieldFocus, pFieldAperture,
-        pCamX, pCamY, pCamZ, pAlpha, pFieldPolarity, pFieldInterfere, pFieldSaturation,
+        pCamX, pCamY, pCamZ, pAlpha, pFieldPolarity, pFieldInterfere, pFieldSaturation, pFieldSpan,
         numParams
     };
 
@@ -83,6 +86,13 @@ namespace scope
     constexpr float fieldCurveSpan = 2.0f;
     constexpr int fieldBands = 8;
     constexpr float fieldBandOctaves = 1.25f;
+
+    // The Spectrogram shape of the field: spectrumSize moments of sound,
+    // each as spectrumSize pitches over the octaves of the bands, lowest
+    // first. spectrumFloorDb is the loudness that is black; full scale
+    // (0 dB) is the brightest.
+    constexpr int spectrumSize = 128;
+    constexpr float spectrumFloorDb = -72.0f;
 
     struct ParamInfo
     {
@@ -140,7 +150,7 @@ namespace scope
         { "fieldspeed", "Field speed", ParamKind::real,   0.0f, 100.0f,   0.01f, 0.3f,  1.0f,     "%",  "",                                28 },
         { "fieldvolume", "Field volume", ParamKind::toggle, 0.0f, 1.0f,   1.0f,  1.0f,  1.0f,     "",   "",                                29 },
         { "fielddensity", "Field density", ParamKind::real, 0.0f, 100.0f, 0.1f,  1.0f,  50.0f,    "%",  "",                                30 },
-        { "fieldshape", "Field shape", ParamKind::choice, 0.0f,  1.0f,    1.0f,  1.0f,  0.0f,     "",   "Dots|Rings",                      31 },
+        { "fieldshape", "Field shape", ParamKind::choice, 0.0f,  2.0f,    1.0f,  1.0f,  0.0f,     "",   "Dots|Rings|Spectrogram",          31 },
         { "fieldeq",    "Field EQ",   ParamKind::toggle,  0.0f,   1.0f,   1.0f,  1.0f,  0.0f,     "",   "",                                14 },
         { "fieldeqwidth", "Field EQ width", ParamKind::real, 0.3f, 10.0f, 0.01f, 0.5f,  2.0f,     "oct", "",                               15 },
         { "fieldfocus", "Field focus", ParamKind::real,  -3.0f,   3.0f,   0.01f, 1.0f,  0.0f,     "",   "",                                3 },
@@ -152,5 +162,6 @@ namespace scope
         { "fieldpolarity", "Field polarity", ParamKind::real, -1.0f, 1.0f, 0.01f, 1.0f,  1.0f,     "",   "",                                -1 },
         { "fieldinterfere", "Field interfere", ParamKind::toggle, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,    "",   "",                                -1 },
         { "fieldsaturation", "Field saturation", ParamKind::real, 0.0f, 100.0f, 0.1f, 1.0f, 0.0f,  "%",  "",                                -1 },
+        { "fieldspan",  "Field span", ParamKind::real,    0.5f,  30.0f,   0.1f,  0.5f,  4.0f,     "s",  "",                                -1 },
     };
 }
