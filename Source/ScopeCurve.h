@@ -77,6 +77,11 @@ namespace scope
     // then, 0..1 from spectrumFloorDb to full scale (squared). level[0] is how far
     // time has gone on since the newest moment, 0..1 of the step between
     // two, so the picture can move smoothly.
+    //
+    // In a spectrum (Frame::shells) only the first fieldSamples count: how
+    // loud each pitch is now, 0..1 likewise, from 20 Hz at the first to
+    // the top of the bands at the last. That is also the way out from the
+    // source, to one plane unit from it.
     struct FieldSource
     {
         Mat3 plane;
@@ -109,6 +114,7 @@ namespace scope
         int numSources = 0;
         bool rings = false;                      // the sound spreads from the sources as rings; else it stands, as dots
         bool spectrum = false;                   // neither: a spectrogram on each source's plane
+        bool shells = false;                     // or the spectrum of the sound now, as shells round each source
         FieldSource sources[maxFieldSources];
         float reach = 1.0f;                      // the distance the samples cover, in plane units
         float bandColour[fieldBands][3] {};      // each band's colour on the scene's scale (ColourScale.h)
@@ -126,6 +132,7 @@ namespace scope
             numSources = 0;
             rings = false;
             spectrum = false;
+            shells = false;
             eq = false;
             reach = 1.0f;
             for (auto& panel : panels)

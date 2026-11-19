@@ -36,7 +36,7 @@
 //   canvas  : background + the guides of every plane in use, then every
 //             layer's tone map (brightness, contrast) of accum + current +
 //             blur halo, combined with what is under it by its blend mode
-//   screen  : the canvas
+//   screen  : the canvas, or its negative (Invert)
 class ScopeComponent : public juce::Component,
                        private juce::OpenGLRenderer,
                        private juce::Timer
@@ -101,6 +101,7 @@ private:
         float alpha;               // 0..1: the alpha of the colours, in every mode
         bool fieldInterfere;       // the sources' waves are added before they are coloured
         float fieldPure;           // 0..1: how pure the field's colours are
+        bool invert;               // the finished picture is shown as its negative
     };
 
     // Where one panel lands in this component's framebuffer: a transform from

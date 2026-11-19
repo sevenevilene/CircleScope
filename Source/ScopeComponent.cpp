@@ -121,6 +121,7 @@ namespace
         uniform sampler2D waves;
         uniform float reach;
         uniform float rings;          // 1: rings, 0: dots
+        uniform float shells;         // 1: neither, but the spectrum of each source round it
         uniform float eq;             // 1: the EQ is on
         uniform float eqWidth;        // the width of the range of pitch let through, in bands
         uniform float curve[16];      // the pitch at each distance, 0..1 over the eight bands
@@ -191,8 +192,21 @@ namespace
 
         // The field of source k at a point, given in the source's own axes:
         // its amplitude, and its colour there.
+        //
+        // As shells it is the source's spectrum (the first of its rows:
+        // how loud each pitch is, lowest first), laid out by pitch from
+        // the source to a distance of 1, in the pitch's colour.
         float field (vec3 q, int k, out vec4 colour)
         {
+            if (shells > 0.5)
+            {
+                float away = length (q);
+                float place = clamp (away * 8.0 - 0.5, 0.0, 7.0);
+                int b = int (min (floor (place), 6.0));
+                colour = vec4 (mix (bandColour[b], bandColour[b + 1], place - float (b)), colourAlpha);
+                return wave (away, float (k * 8));
+            }
+
             float pitch = eq > 0.5 ? pitchAt (q) : 0.0;
 
             float a = 0.0, weight = 0.0;
@@ -225,6 +239,26 @@ namespace
         // sums. Returns the amplitude of it all.
         float together (vec3 p, out vec4 colour)
         {
+            // Spectra have no waves to cancel: how loud they are is added.
+            if (shells > 0.5)
+            {
+                float loud = 0.0;
+                vec4 all = vec4 (0.0);
+                for (int k = 0; k < 8; ++k)
+                {
+                    if (k >= count)
+                        break;
+
+                    vec3 q = sourceAxes[k] * (p - sourceAt[k]);
+                    vec4 c;
+                    float x = field (q, k, c) * fadeAt (k, length (q));
+                    loud += x;
+                    all += x * c;
+                }
+                colour = all / max (loud, 1.0e-6);
+                return loud;
+            }
+
             vec3 qs[8];
             float dims[8];
             float pitches[8];
@@ -425,7 +459,7 @@ namespace
                     if (interfere > 0.5)
                     {
                         vec4 colour;
-                        float m = seen (together (p, colour)) * (rings > 0.5 ? 0.3 : 2.0);
+                        float m = seen (together (p, colour)) * (rings + shells > 0.5 ? 0.3 : 2.0);
                         glow = m * colour.rgb;
                         thick = m * colour.a;
                         strong = m;
@@ -446,8 +480,9 @@ namespace
                         // from its edge to its middle: a smooth wave makes
                         // soft clouds, a steep one hard-edged blocks. A
                         // shell of a ring would hide all the shells inside
-                        // it, so rings let most of the light through.
-                        float m = seen (a) * dim * (rings > 0.5 ? 0.3 : 2.0);
+                        // it, so rings let most of the light through, and
+                        // the shells of a spectrum likewise.
+                        float m = seen (a) * dim * (rings + shells > 0.5 ? 0.3 : 2.0);
                         // The colour's alpha is how much of the light behind
                         // it a point hides.
                         glow += m * colour.rgb;
@@ -548,10 +583,12 @@ namespace
 
     constexpr const char* copyFragmentShader = R"(
         uniform sampler2D image;
+        uniform float invert;     // 1: the negative of the image
         varying vec2 uv;
         void main()
         {
-            gl_FragColor = vec4 (texture2D (image, uv).rgb, 1.0);
+            vec3 c = texture2D (image, uv).rgb;
+            gl_FragColor = vec4 (mix (c, 1.0 - clamp (c, 0.0, 1.0), invert), 1.0);
         }
     )";
 
@@ -896,7 +933,8 @@ ScopeComponent::Look ScopeComponent::readLook (const ScopeParamSet* params)
              get (pFieldAperture) * 0.01f,
              get (pAlpha) * 0.01f,
              get (pFieldInterfere) > 0.5f,
-             get (pFieldSaturation) * 0.01f };
+             get (pFieldSaturation) * 0.01f,
+             get (pInvert) > 0.5f };
 }
 
 scope::Camera ScopeComponent::cameraOf (const Look& look)
@@ -1129,6 +1167,7 @@ void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& came
             glBlendFunc (GL_CONSTANT_ALPHA, GL_ONE);
             owner.copyShader->use();
             owner.copyShader->setUniform ("image", (GLint) 0);
+            owner.copyShader->setUniform ("invert", 0.0f);
             for (auto* target : { &accumTarget, &currentTarget })
             {
                 target->bind();
@@ -1270,6 +1309,7 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     shader.setUniform ("pure", juce::jlimit (0.0f, 1.0f, look.fieldPure));
     shader.setUniform ("reach", juce::jmax (1.0e-3f, frame->reach));
     shader.setUniform ("rings", frame->rings ? 1.0f : 0.0f);
+    shader.setUniform ("shells", frame->shells ? 1.0f : 0.0f);
     shader.setUniform ("eq", frame->eq ? 1.0f : 0.0f);
     shader.setUniform ("eqWidth", frame->eqWidth / scope::fieldBandOctaves);
     glUniform1fv (glGetUniformLocation (program, "curve"), scope::fieldCurvePoints, frame->curve);
@@ -1515,8 +1555,14 @@ void ScopeComponent::renderOpenGL()
 
     glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) screenFbo);
     glViewport (0, 0, w, h);
+    // The whole picture as its negative, if any layer asks for it.
+    bool inverted = false;
+    for (int i = 0; i < count; ++i)
+        inverted = inverted || drawn[i]->look.invert;
+
     copyShader->use();
     copyShader->setUniform ("image", (GLint) 0);
+    copyShader->setUniform ("invert", inverted ? 1.0f : 0.0f);
     bindTexture (0, canvas[top].texture);
     drawFullScreen (*copyShader);
 

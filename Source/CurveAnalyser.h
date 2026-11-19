@@ -59,6 +59,16 @@
 //                was at each moment of the last Field span seconds, time
 //                across and pitch up. The analyser keeps the picture and
 //                adds to it as the sound comes in.
+//                Or a Spectrum, which is a field in space again, but
+//                of pitch: the sound as it is now, each pitch as far
+//                from the instance's position as it is high, 20 Hz at
+//                the centre and 20 kHz a plane unit out. A tone is a
+//                circle on a plane, the shell of a ball in the volume.
+//                Or Pitch dots: the dots as they are, but with an EQ
+//                of its own that is always on, a straight line from the
+//                lowest band of pitch at the instance's position to the
+//                highest where the field ends, as narrow as the bands
+//                allow. Field fade is how far out that is: their size.
 //                The sound is handed on split into bands of pitch, so
 //                the scope can colour each by its pitch. With Field EQ on
 //                it lets through at every distance from the instance only
@@ -121,6 +131,8 @@ private:
         float fieldPolarity;       // what the instance's wave is multiplied by, -1..1
         bool fieldSpectrum;        // a spectrogram, not a field in space
         float fieldSpan;           // which covers this many seconds
+        bool fieldShells;          // the spectrum of the sound now, as shells round the instance
+        bool fieldByPitch;         // dots, each pitch's at its own distance from the instance
     };
 
     // Sample range of the analysis block that gets drawn this frame.
@@ -163,6 +175,7 @@ private:
         std::vector<float> spectrum;
         double spectrumHop = 0.0;
         juce::int64 spectrumNext = 0;                    // the first column still to be made
+        std::vector<float> shells;                       // the Spectrum shape: what it last showed, which dies away
     };
 
     struct Point3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
@@ -179,7 +192,8 @@ private:
     float updateGain (Signal&, Curve, const Range&);
     void addField (scope::Frame&, const Range&);
     void addSpectrogram (scope::Frame&);
-    void addToSpectrum (const Signal&, int from, float* column, bool first);
+    void addShells (scope::Frame&);
+    void addToSpectrum (const Signal&, int from, float* column, int size, bool first);
     void addCurve (scope::Frame::Panel&, Curve, const Range&, std::optional<juce::Colour> colourOverride);
 
     static Settings readSettings (const ScopeSource&);

@@ -320,6 +320,7 @@ private:
             frame.flat = (head.flat & 1) != 0;
             frame.rings = (head.flat & 2) != 0;
             frame.spectrum = (head.flat & 8) != 0;
+            frame.shells = (head.flat & 16) != 0;
             frame.correlation = std::isfinite (head.correlation) ? juce::jlimit (-1.0f, 1.0f, head.correlation) : 1.0f;
             frame.numGuides = numGuides;
             for (int k = 0; k < numGuides; ++k, in += sizeof (net::WirePlane))

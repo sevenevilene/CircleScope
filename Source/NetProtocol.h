@@ -85,7 +85,7 @@ namespace net
     struct FrameHead
     {
         juce::uint8 layout;            // scope::Layout
-        juce::uint8 flat;              // bit 0: flat; bit 1: a field of rings, not dots; bit 2: the field's EQ is on; bit 3: a spectrogram (scope::Frame::spectrum)
+        juce::uint8 flat;              // bit 0: flat; bit 1: a field of rings, not dots; bit 2: the field's EQ is on; bit 3: a spectrogram (scope::Frame::spectrum); bit 4: a spectrum (scope::Frame::shells)
         juce::uint8 numGuides;
         juce::uint8 numSources;        // of a wave field; 0 for curves
         float correlation;

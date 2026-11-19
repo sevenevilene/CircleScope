@@ -70,7 +70,9 @@ CurveAnalyser::Settings CurveAnalyser::readSettings (const ScopeSource& src)
              get (pFieldEqWidth),
              juce::jlimit (-1.0f, 1.0f, get (pFieldPolarity)),
              juce::roundToInt (get (pFieldShape)) == 2,
-             juce::jlimit (paramTable[pFieldSpan].min, paramTable[pFieldSpan].max, get (pFieldSpan)) };
+             juce::jlimit (paramTable[pFieldSpan].min, paramTable[pFieldSpan].max, get (pFieldSpan)),
+             juce::roundToInt (get (pFieldShape)) == 3,
+             juce::roundToInt (get (pFieldShape)) == 4 };
 }
 
 //==============================================================================
@@ -344,6 +346,11 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
         addSpectrogram (frame);
         return;
     }
+    if (s.fieldShells)
+    {
+        addShells (frame);
+        return;
+    }
 
     auto mono = [] (const Signal& sig, int i) { return 0.5f * (sig.block[0][(size_t) i] + sig.block[1][(size_t) i]); };
 
@@ -400,11 +407,20 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
     frame.flat = false;      // it fills the picture, not the panel's square
     frame.reach = (float) span / perUnit;
     frame.rings = rings;
-    frame.eq = s.fieldEq;
-    frame.eqWidth = s.fieldEqWidth;
+    // Pitch dots have an EQ of their own: from the middle of the lowest
+    // band at the source to the middle of the highest where the field
+    // ends, and at each distance little more than the one band. How far
+    // out that is, is theirs to set: Field fade is their size, 100 % being
+    // as far as an EQ's curve goes.
+    const bool byPitch = s.fieldByPitch;
+    const float pitchReach = juce::jlimit (0.1f, 1.0f, s.fieldFade) * scope::fieldCurveSpan;
+    frame.eq = s.fieldEq || byPitch;
+    frame.eqWidth = byPitch ? 0.1f : s.fieldEqWidth;
     for (int i = 0; i < scope::fieldCurvePoints; ++i)
     {
-        frame.curve[i] = juce::jlimit (0.0f, 1.0f, lead.source.fieldCurve[i].load());
+        const float away = scope::fieldCurveSpan * (float) i / (float) (scope::fieldCurvePoints - 1);
+        frame.curve[i] = byPitch ? (0.5f + ((float) scope::fieldBands - 1.0f) * juce::jmin (1.0f, away / pitchReach)) / (float) scope::fieldBands
+                                 : juce::jlimit (0.0f, 1.0f, lead.source.fieldCurve[i].load());
         frame.show[i] = juce::jlimit (0.0f, 1.0f, lead.source.showCurve[i].load());
     }
 
@@ -428,9 +444,11 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
 
         out.plane = set.plane;
         out.at = set.at;
-        out.fade = set.fieldFade;
+        // Pitch dots end where their pitch does, all there until just before it.
+        out.fade = byPitch ? 1.0f / pitchReach : set.fieldFade;
         for (int i = 0; i < scope::fieldCurvePoints; ++i)
-            out.fadeCurve[i] = juce::jlimit (0.0f, 1.0f, sig.source.fadeCurve[i].load());
+            out.fadeCurve[i] = byPitch ? (i < scope::fieldCurvePoints - 1 ? 1.0f : 0.0f)
+                                       : juce::jlimit (0.0f, 1.0f, sig.source.fadeCurve[i].load());
 
         // The sound once per band of pitch: its spectrum, and of that
         // each band in turn, back as sound. The bands overlap so that
@@ -559,7 +577,7 @@ void CurveAnalyser::addSpectrogram (scope::Frame& frame)
                 if (from < edgeMargin || from + fftSize > blockSize - edgeMargin)
                     continue;
 
-                addToSpectrum (sig, (int) from, column, first);
+                addToSpectrum (sig, (int) from, column, size, first);
                 first = false;
             }
         }
@@ -575,17 +593,57 @@ void CurveAnalyser::addSpectrogram (scope::Frame& frame)
     }
 }
 
+// The Field mode's Spectrum shape: every signal gives the spectrum of its
+// newest sound, which the scope lays out by pitch round the signal's
+// position, out to one plane unit: so that is where its field ends. A
+// pitch that has gone quiet dies away over a few frames, not at once.
+void CurveAnalyser::addShells (scope::Frame& frame)
+{
+    constexpr int size = scope::fieldSamples;
+    const auto& lead = *signals[0];
+
+    frame.layout = Layout::mono;
+    frame.flat = false;
+    frame.shells = true;
+    frame.reach = 1.0f;
+    for (int i = 0; i < scope::fieldCurvePoints; ++i)
+        frame.show[i] = juce::jlimit (0.0f, 1.0f, lead.source.showCurve[i].load());
+    for (int band = 0; band < scope::fieldBands; ++band)
+        colours.colourAt (scope::ColourScale::placeOfBand (band), frame.bandColour[band]);
+
+    frame.numSources = (int) juce::jmin (signals.size(), (size_t) scope::maxFieldSources);
+
+    for (int k = 0; k < frame.numSources; ++k)
+    {
+        auto& sig = *signals[(size_t) k];
+        auto& out = frame.sources[k];
+        out.plane = sig.settings.plane;
+        out.at = sig.settings.at;
+        out.fade = 1.0f;
+        std::fill (std::begin (out.fadeCurve), std::end (out.fadeCurve), 1.0f);
+        std::fill (std::begin (out.level), std::end (out.level), 0.0f);
+
+        out.samples.assign ((size_t) (scope::fieldSamples * scope::fieldBands), 0.0f);
+        addToSpectrum (sig, blockSize - edgeMargin - (1 << spectrumOrder), out.samples.data(), size, true);
+
+        sig.shells.resize ((size_t) size, 0.0f);
+        for (int j = 0; j < size; ++j)
+            out.samples[(size_t) j] = sig.shells[(size_t) j] = juce::jmax (out.samples[(size_t) j], sig.shells[(size_t) j] * 0.85f);
+    }
+}
+
 // The spectrum of the signal's sound in the samples of its block from one
 // on, as the pitches of a spectrogram's column: each 0..1, from
 // spectrumFloorDb to full scale, squared so the quiet stays dark. Added to
-// what the column has (the louder stays), or put there as its first.
+// what the column has (the louder stays), or put there as its first. The
+// column has "size" pitches.
 //
 // Low pitches lie closer together than a short spectrum can tell apart, so
 // those below spectrumSplitHz come from one of twice the length, ending at
 // the same sample, where the block has that much sound.
-void CurveAnalyser::addToSpectrum (const Signal& sig, int from, float* column, bool first)
+void CurveAnalyser::addToSpectrum (const Signal& sig, int from, float* column, int size, bool first)
 {
-    constexpr int size = scope::spectrumSize, fftSize = 1 << spectrumOrder;
+    constexpr int fftSize = 1 << spectrumOrder;
     constexpr double spectrumSplitHz = 500.0;
 
     // How strong each bin is, for a spectrum of "length" samples that ends where the short one does.
@@ -614,7 +672,7 @@ void CurveAnalyser::addToSpectrum (const Signal& sig, int from, float* column, b
     // where it is read between two, and many high up, where it is the
     // strongest of them.
     const double octaves = (double) scope::fieldBands * (double) scope::fieldBandOctaves;
-    auto hzOf = [octaves] (double row) { return 20.0 * std::pow (2.0, octaves * row / (double) size); };
+    auto hzOf = [octaves, size] (double row) { return 20.0 * std::pow (2.0, octaves * row / (double) size); };
 
     for (int row = 0; row < size; ++row)
     {

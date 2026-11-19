@@ -55,6 +55,26 @@ Each channel is drawn as a 2D trajectory in its own square:
   scale. The "Seen" curve says how bright each loudness is. Lock, speed,
   fade, polarity, Interfere, the EQ and Volume do nothing to it.
 
+  Or a Spectrum: the sound as it is now, laid out by pitch round the
+  instance's position, 20 Hz at the centre and 20 kHz one plane unit out
+  (the edge of the square) in every direction. A tone is a circle on a
+  plane and the shell of a ball in the volume, as bright as it is loud
+  and in its pitch's colour; a chord is circles inside each other. It
+  has Volume, Density, Focus and Aperture like the dots, and the "Seen"
+  curve; the Window, fade, lock, polarity, Interfere and the EQ do
+  nothing to it.
+
+  Or Pitch dots, which are the dots themselves, standing waves, pulsing,
+  cancelling and all, but sorted by pitch the same way: at each distance
+  from the instance's position only the dots of the pitch that belongs
+  there show, the large ones of the lowest notes at the centre and finer
+  ones further out, to the finest where the field ends. **Size** (the
+  Field fade slider, under another name) is how far out that is: 50 % is
+  the edge of the square, 100 % twice that. It is the Field EQ with a
+  fixed straight curve and the narrowest range, so it sorts in the same
+  eight bands of pitch; the fade's curve and the EQ itself are not there
+  to set.
+
   The real swing is far too fast for a screen, so **Lock to wave** works
   like a stroboscope: it takes the picture at the same point of the wave
   every frame, moved on a little each time, and the dots pulse in slow
@@ -197,6 +217,11 @@ node are layers there (see below) and share the scene: their planes cross at
 the centre, like the three coordinate planes. There is one camera for all of
 them: set the view on any one instance (if several have, the lowest layer's
 counts). Every plane in use shows its guides once.
+
+**Invert** shows the finished picture as its negative, the way a photo editor
+inverts an image: every colour becomes its opposite and the black background
+white. It is of the whole picture, so on a wall or node it is on for a stream
+if any of its layers has it on.
 
 All of these are host parameters, so the DAW can automate a turning plane or
 an orbiting camera. Lines keep their thickness whatever the angle. The drawing

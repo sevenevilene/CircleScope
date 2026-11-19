@@ -148,7 +148,7 @@ private:
         // The head: what the frame is, and how much of it is coming.
         {
             const int numGuides = juce::jlimit (0, scope::maxGuidePlanes, frame.numGuides);
-            const net::FrameHead head { (juce::uint8) frame.layout, (juce::uint8) ((frame.flat ? 1 : 0) | (frame.rings ? 2 : 0) | (frame.eq ? 4 : 0) | (frame.spectrum ? 8 : 0)), (juce::uint8) numGuides, (juce::uint8) numSources,
+            const net::FrameHead head { (juce::uint8) frame.layout, (juce::uint8) ((frame.flat ? 1 : 0) | (frame.rings ? 2 : 0) | (frame.eq ? 4 : 0) | (frame.spectrum ? 8 : 0) | (frame.shells ? 16 : 0)), (juce::uint8) numGuides, (juce::uint8) numSources,
                                         frame.correlation,
                                         { (juce::uint16) numPoints[0], (juce::uint16) numPoints[1] },
                                         { (juce::int16) frame.panels[0].secondStart, (juce::int16) frame.panels[1].secondStart } };

@@ -40,7 +40,16 @@
 // instance's position. Or it is a Spectrogram: no field in space but a
 // picture on the instance's plane, time across its square (now at the
 // right, Field span seconds ago at the left) and pitch up it (20 Hz to
-// 20 kHz), each point as bright as that pitch was loud then. Field EQ lets only a range of pitch into the field
+// 20 kHz), each point as bright as that pitch was loud then. Or a
+// Spectrum: the sound as it is now, laid out by pitch round the instance's
+// position, 20 Hz at the centre and 20 kHz one plane unit out in every
+// direction, so a tone is a circle on a plane and the shell of a ball in
+// the volume, as bright as it is loud. Or Pitch dots, which are the dots
+// themselves, standing waves and all, sorted the same way: at each
+// distance from the instance's position only the dots of the pitch that
+// belongs there, the large ones of 20 Hz at the centre and the fine ones
+// of 20 kHz where the field ends. For them Field fade is not a fade but
+// their size: how far out that is, 100 % being two plane units. Field EQ lets only a range of pitch into the field
 // at each distance from the instance's position: which pitch is a curve
 // the user draws (not a parameter: ScopeSource::fieldCurve), and Field EQ
 // width is how wide the range is. Field aperture gives the volume a depth
@@ -60,6 +69,10 @@
 // field on its planes how much of their light is added, in the field's
 // volume how much a point hides what is behind it.
 //
+// Invert turns the finished picture into its negative, as a photo editor
+// does: every colour becomes its opposite, black becomes white. It is of the
+// whole picture, guides and all layers, so it is on if any layer has it on.
+//
 // New parameters go at the end: a receiver takes as many values as it knows
 // and leaves the rest at their defaults.
 namespace scope
@@ -71,7 +84,7 @@ namespace scope
         pBlend, pLayer, pDivide, pSwingMotion, pSwingRate, pSwingSync,
         pPlane, pPlaneRotX, pPlaneRotY, pPlaneRotZ, pViewYaw, pViewPitch, pViewRoll,
         pPosX, pPosY, pPosZ, pFieldFade, pFieldLock, pFieldSpeed, pFieldVolume, pFieldDensity, pFieldShape, pFieldEq, pFieldEqWidth, pFieldFocus, pFieldAperture,
-        pCamX, pCamY, pCamZ, pAlpha, pFieldPolarity, pFieldInterfere, pFieldSaturation, pFieldSpan,
+        pCamX, pCamY, pCamZ, pAlpha, pFieldPolarity, pFieldInterfere, pFieldSaturation, pFieldSpan, pInvert,
         numParams
     };
 
@@ -150,7 +163,7 @@ namespace scope
         { "fieldspeed", "Field speed", ParamKind::real,   0.0f, 100.0f,   0.01f, 0.3f,  1.0f,     "%",  "",                                28 },
         { "fieldvolume", "Field volume", ParamKind::toggle, 0.0f, 1.0f,   1.0f,  1.0f,  1.0f,     "",   "",                                29 },
         { "fielddensity", "Field density", ParamKind::real, 0.0f, 100.0f, 0.1f,  1.0f,  50.0f,    "%",  "",                                30 },
-        { "fieldshape", "Field shape", ParamKind::choice, 0.0f,  2.0f,    1.0f,  1.0f,  0.0f,     "",   "Dots|Rings|Spectrogram",          31 },
+        { "fieldshape", "Field shape", ParamKind::choice, 0.0f,  4.0f,    1.0f,  1.0f,  0.0f,     "",   "Dots|Rings|Spectrogram|Spectrum|Pitch dots", 31 },
         { "fieldeq",    "Field EQ",   ParamKind::toggle,  0.0f,   1.0f,   1.0f,  1.0f,  0.0f,     "",   "",                                14 },
         { "fieldeqwidth", "Field EQ width", ParamKind::real, 0.3f, 10.0f, 0.01f, 0.5f,  2.0f,     "oct", "",                               15 },
         { "fieldfocus", "Field focus", ParamKind::real,  -3.0f,   3.0f,   0.01f, 1.0f,  0.0f,     "",   "",                                3 },
@@ -163,5 +176,6 @@ namespace scope
         { "fieldinterfere", "Field interfere", ParamKind::toggle, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,    "",   "",                                -1 },
         { "fieldsaturation", "Field saturation", ParamKind::real, 0.0f, 100.0f, 0.1f, 1.0f, 0.0f,  "%",  "",                                -1 },
         { "fieldspan",  "Field span", ParamKind::real,    0.5f,  30.0f,   0.1f,  0.5f,  4.0f,     "s",  "",                                -1 },
+        { "invert",     "Invert",     ParamKind::toggle,  0.0f,   1.0f,   1.0f,  1.0f,  0.0f,     "",   "",                                -1 },
     };
 }
