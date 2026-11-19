@@ -1,0 +1,222 @@
+#pragma once
+
+#include <juce_dsp/juce_dsp.h>
+#include <complex>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <vector>
+#include "ScopeCurve.h"
+#include "ColourScale.h"
+
+// Turns audio into the drawing: reads the samples of an instance, does the
+// FFT work (analytic signal, band limits), and builds each frame's curve by
+// the instance's mode, layout and plane. It runs on a thread of its own and
+// publishes the frames to a CurveFeed.
+//
+// The modes, per channel (Side by side / Overlay / Mono layouts):
+//   Quadrature:  x = s(t), y = H{s}(t) (90 degrees shifted, via the analytic
+//                signal). A pure sine traces a perfect circle.
+//   Delay embed: x = s(t), y = s(t - delay).
+//   Swing:       the signal moves a point along an axis through the centre,
+//                and the axis swings round in the plane, so the point is at
+//                s(t) * (cos a(t), sin a(t)): a polar plot. The axis either
+//                swings back and forth like a pendulum, 180 degrees each
+//                way, or turns round and round, once per Window length or
+//                at a free rate. A rate tied to the pitch gives a still
+//                figure (a rose); slightly off, it slowly turns.
+//   Axis:        the signal moves a point along one axis and nothing else:
+//                up and down (y) on the XY plane, in depth (z) on YZ, left
+//                and right (x) on XZ.
+//   Field:       not a curve but a field of standing waves. Space is filled
+//                with dots that stay where they are and swing between the
+//                colour of their pitch and its opposite hue (ColourScale.h): every tone in the
+//                sound makes a grid of them, neighbours opposite, as far
+//                apart as the tone's wavelength (the Window is the scale:
+//                one Window of sound to a plane unit). So a low note is
+//                large dots, the highest are a pixel each, like fine noise,
+//                and a sound is all of its tones' grids added. The grid
+//                runs along the three axes of the instance's plane, from
+//                its position, so in space the dots are spheres and every
+//                plane cuts through them. The scope shows them as a volume
+//                looked into from the camera, or only the planes' cuts, in
+//                both cases the fields of all the instances summed here.
+//                A standing wave is the sound running both ways at once:
+//                the analyser hands on the sound mirrored about one moment
+//                (scope::FieldSource), and the scope works out every pixel
+//                from it on the graphics card. It is the channels' average,
+//                whatever the layout. The swing is far too fast to see, so
+//                Field lock works like a stroboscope: it takes the moment
+//                from the same point of the wave every frame, moved on a
+//                little each time (Field speed), and the dots pulse slowly.
+//                Field shape can be Rings instead: then each instance is a
+//                point the sound spreads out from in all directions, so at
+//                a distance d from it you find the sound of d Windows ago,
+//                and a tone makes rings (shells, in space). Locked, they
+//                move outward slowly.
+//                Or the shape is a Spectrogram, which is no field in
+//                space: the instance's plane shows how loud each pitch
+//                was at each moment of the last Field span seconds, time
+//                across and pitch up. The analyser keeps the picture and
+//                adds to it as the sound comes in.
+//                Or a Spectrum, which is a field in space again, but
+//                of pitch: the sound as it is now, each pitch as far
+//                from the instance's position as it is high, 20 Hz at
+//                the centre and 20 kHz a plane unit out. A tone is a
+//                circle on a plane, the shell of a ball in the volume.
+//                Or Pitch dots: the dots as they are, but with an EQ
+//                of its own that is always on, a straight line from the
+//                lowest band of pitch at the instance's position to the
+//                highest where the field ends, as narrow as the bands
+//                allow. Field fade is how far out that is: their size.
+//                The sound is handed on split into bands of pitch, so
+//                the scope can colour each by its pitch. With Field EQ on
+//                it lets through at every distance from the instance only
+//                the bands about the pitch the instance's curve gives for
+//                that distance.
+// Mid / side layout: a goniometer. Vertical = mid (L+R), horizontal = side
+// (R-L). Mono layout: one trajectory, of the two channels' average; a mono
+// source is always drawn this way.
+//
+// Low cut / High cut band-limit the signal in the frequency domain before
+// any of that.
+//
+// Each instance's picture lies on its plane in the 3D scene (Plane.h). The
+// analyser can add other instances to its own (its partners): at every
+// moment each gives a point on its plane, and the sum of those is one point
+// in space, so together they draw a single curve in 3D. The instance's own
+// settings say what the whole picture is (layout, window, colours); every
+// partner keeps its mode, delay, band limits, plane and auto-gain. Where
+// the instances say where their samples are on a shared clock
+// (ScopeSource::clockOffset), the sum is of samples from the same moment;
+// otherwise of each one's newest.
+//
+// It works when asked: a frame each time a scope requests one from the
+// feed, and about sixty a second while the feed is being streamed.
+class CurveAnalyser : private juce::Thread
+{
+public:
+    static constexpr int maxSignals = 8;         // the instance and up to seven partners
+
+    // The instances to add to the analyser's own, asked for every frame.
+    using Partners = std::function<std::vector<std::shared_ptr<const ScopeSource>>()>;
+
+    // own must outlive the analyser; partners are kept alive while in use.
+    CurveAnalyser (const ScopeSource& own, scope::CurveFeed& feedToFill, Partners partnersToAdd = {});
+    ~CurveAnalyser() override;
+
+private:
+    using Mode = scope::Mode;
+    using Layout = scope::Layout;
+
+    struct Settings
+    {
+        Mode mode;
+        bool fixedColour, guides;
+        Layout layout;
+        bool swingRound;
+        float swingHz;
+        float windowMs, delayMs;
+        float lowCutHz, highCutHz;
+        double sampleRate;
+        scope::Mat3 plane;         // plane to scene
+        bool axisAlongU;           // Axis mode: the point moves along the plane's u, not its v
+        scope::Vec3 at;            // the plane's centre in the scene
+        float fieldFade;           // Field mode: amplitude lost per plane unit
+        bool fieldLock;
+        float fieldSpeed;          // of the locked picture, as a fraction of real time
+        bool fieldRings;
+        bool fieldEq;
+        float fieldEqWidth;        // octaves
+        float fieldPolarity;       // what the instance's wave is multiplied by, -1..1
+        bool fieldSpectrum;        // a spectrogram, not a field in space
+        float fieldSpan;           // which covers this many seconds
+        bool fieldShells;          // the spectrum of the sound now, as shells round the instance
+        bool fieldByPitch;         // dots, each pitch's at its own distance from the instance
+    };
+
+    // Sample range of the analysis block that gets drawn this frame.
+    struct Range { int start, end, length, stride, freqLag; };
+
+    static constexpr int fftOrder = 14;
+    static constexpr int blockSize = 1 << fftOrder;   // 16384 samples
+    static constexpr int edgeMargin = 1024;          // skip FFT edge artefacts
+    static constexpr int spectrumOrder = 12;         // of the FFT a spectrogram is made with: 4096 samples
+
+    // One instance's audio, analysed.
+    struct Signal
+    {
+        Signal (const ScopeSource& s, std::shared_ptr<const ScopeSource> keepAlive) : source (s), keep (std::move (keepAlive))
+        {
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                block[ch].resize ((size_t) blockSize);
+                analytic[ch].resize ((size_t) blockSize);
+            }
+        }
+
+        const ScopeSource& source;
+        std::shared_ptr<const ScopeSource> keep;
+        Settings settings {};
+        std::vector<float> block[2];
+        std::vector<std::complex<float>> analytic[2];    // z(t) = s(t) + i*H{s}(t)
+        std::vector<float> bandWeights;                  // per FFT bin, 0..N/2
+        float weightsLowCut = -1.0f, weightsHighCut = -1.0f;
+        double weightsSampleRate = 0.0;
+        bool bandLimited = false;
+        float gain[4] { 1.0f, 1.0f, 1.0f, 1.0f };        // per Curve
+        float fieldGain = 1.0f;                          // of its wave in the Field mode
+        size_t blockStart[2] {};                         // absolute position of each block's first sample
+
+        // The spectrogram so far: column c holds the sound from c to c + 1
+        // times spectrumHop samples on the instance's ring, as
+        // scope::spectrumSize pitches, and is kept at c modulo
+        // scope::spectrumSize.
+        std::vector<float> spectrum;
+        double spectrumHop = 0.0;
+        juce::int64 spectrumNext = 0;                    // the first column still to be made
+        std::vector<float> shells;                       // the Spectrum shape: what it last showed, which dies away
+    };
+
+    struct Point3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
+    enum Curve { leftCurve = 0, rightCurve = 1, goniometerCurve = 2, monoCurve = 3 };
+
+    void run() override;
+    void makeFrame();
+    void updateSignals();
+    void readSamples();
+    Range computeRange (const Settings&) const;
+    void updateBandWeights (Signal&);
+    void analyse (Signal&, int channel);
+    void updateCorrelation (const Range&);
+    float updateGain (Signal&, Curve, const Range&);
+    void addField (scope::Frame&, const Range&);
+    void addSpectrogram (scope::Frame&);
+    void addShells (scope::Frame&);
+    void addToSpectrum (const Signal&, int from, float* column, int size, bool first);
+    void addCurve (scope::Frame::Panel&, Curve, const Range&, std::optional<juce::Colour> colourOverride);
+
+    static Settings readSettings (const ScopeSource&);
+    juce::Colour colourForFrequency (double hz) const;
+
+    const ScopeSource& source;
+    scope::CurveFeed& feed;
+    const Partners partners;
+
+    juce::dsp::FFT fft { fftOrder };
+    juce::dsp::FFT spectrumFft { spectrumOrder }, spectrumLongFft { spectrumOrder + 1 };   // the long one for low pitches
+    std::vector<float> spectrumWindow;               // their windows, one after the other
+    scope::FramePool pool;
+    std::vector<std::unique_ptr<Signal>> signals;    // [0] is the instance's own
+    std::vector<std::complex<float>> timeScratch, freqScratch;
+    std::vector<std::complex<float>> bandFreq, bandTime;   // Field mode: one band of a source's sound
+    std::vector<float> wave;                         // Field mode: the sound a source's samples are taken from
+    std::vector<Point3> points;                      // scratch: the curve being summed
+    float sumGain[4] { 1.0f, 1.0f, 1.0f, 1.0f };     // of a sum of several planes, per Curve
+    float correlation = 1.0f;
+    scope::ColourScale colours;                      // the scene's, as it was when this frame began
+    double lastFrameMs = 0.0;
+    double fieldCreep = 0.0, lastFieldMs = 0.0;      // Field mode: how far the locked picture has moved on, in samples
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CurveAnalyser)
+};

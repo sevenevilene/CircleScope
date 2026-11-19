@@ -3,23 +3,42 @@
 CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     : AudioProcessorEditor (p),
       scopeProcessor (p),
-      scope (p),
+      scope (p.feed, true),
+      cameraPad (p.apvts),
       controls (p, &fullScreenButton, false)
 {
     addAndMakeVisible (scope);
+    scope.addAndMakeVisible (cameraPad);
+    cameraPad.setStereoSettings (&p.stereoMode, &p.stereoDepth, &p.stereoRate);
     addAndMakeVisible (controls);
+    controls.onHeightChanged = [this] { resized(); };
 
-    fullScreenButton.setTooltip ("Full screen (or double-click the scope)");
+    fullScreenButton.setTooltip ("Full screen (or double-click the scope). Esc or F exits.");
     fullScreenButton.onClick = [this] { toggleFullScreen(); };
     scope.onDoubleClick = [this] { toggleFullScreen(); };
 
     setResizable (true, true);
-    setResizeLimits (640, 400, 2400, 1400);
-    setSize (980, 620);
+    setResizeLimits (800, 830, 2400, 1500);
+    setSize (980, 1040);
+
+    startTimerHz (5);
+    timerCallback();
+}
+
+// While any instance in the host is in full screen, no editor draws its
+// scope: this one's, or another instance's that is open beside it. And the
+// scopes follow the instance's stereo setting.
+void CircleScopeEditor::timerCallback()
+{
+    scope.setStereo ((scope::Stereo) scopeProcessor.stereoMode.load(), scopeProcessor.stereoDepth.load(), scopeProcessor.stereoRate.load());
+    if (fullScreen != nullptr)
+        fullScreen->showStereo();
+    scope.setVisible (FullScreenWindow::numShowing.load() == 0);
 }
 
 CircleScopeEditor::~CircleScopeEditor()
 {
+    stopTimer();
     fullScreen.reset();   // leave kiosk mode before the editor goes away
 }
 
@@ -29,6 +48,7 @@ void CircleScopeEditor::toggleFullScreen()
     {
         fullScreen.reset();
         fullScreenButton.setButtonText ("Full screen");
+        timerCallback();
         return;
     }
 
@@ -42,16 +62,19 @@ void CircleScopeEditor::toggleFullScreen()
         scopeProcessor, display->totalArea,
         [safeThis] { if (safeThis != nullptr && safeThis->fullScreen != nullptr) safeThis->toggleFullScreen(); });
     fullScreenButton.setButtonText ("Exit full screen");
+
+    timerCallback();
 }
 
 void CircleScopeEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff17171a));
+    g.fillAll (juce::Colour (0xff09090b));
 }
 
 void CircleScopeEditor::resized()
 {
     auto area = getLocalBounds();
-    controls.setBounds (area.removeFromBottom (ControlPanel::preferredHeight));
+    controls.setBounds (area.removeFromBottom (controls.getPreferredHeight()));
     scope.setBounds (area);
+    cameraPad.setTopLeftPosition (8, scope.getHeight() - CameraPad::height - 8);
 }

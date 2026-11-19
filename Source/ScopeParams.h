@@ -1,0 +1,181 @@
+#pragma once
+
+// The one list of look/analysis parameters. The plugin builds its host
+// parameters from it, the network stream carries the values in this order,
+// receivers store them in this order, and MIDI CCs map through it.
+//
+// Blend, Layer and Divide only matter on a receiver (wall or cluster node),
+// where every plugin instance sending to a stream is one layer of it:
+//   Blend   how this layer is combined with the layers under it
+//   Layer   stacking order, 1 at the bottom
+//   Divide  on a wall, split one picture over the cells of all this
+//           instance's streams instead of repeating it in each
+//
+// The Swing parameters belong to the Swing mode (see ScopeComponent.h).
+//
+// Plane and Plane rot X/Y/Z place the instance's drawing in the 3D scene;
+// View yaw / pitch / roll are the camera, which turns the whole drawing. It
+// is taken from the lowest layer that has turned it (see Plane.h). Camera
+// X / Y / Z are the point in the scene it looks at and turns about, so
+// moving that point moves the camera through the scene.
+//
+// Position X / Y / Z move the centre of the instance's plane in the scene.
+//
+// Field fade, Field lock and Field speed belong to the Field mode (see
+// CurveAnalyser.h; its colours are the scene's, see ColourScale.h): how
+// near to the instance's position the field ends (how strong it is on the
+// way there is a curve the user draws, not a parameter:
+// ScopeSource::fadeCurve, with fieldCurvePoints values from the centre to
+// where it ends), whether the picture is locked to
+// the wave, and how fast the locked picture moves on: a slow motion, in
+// percent of real time. Field volume shows the field as a volume in space,
+// looked through from the camera, instead of only where the planes cut it;
+// Field density is how solid that volume is. What in the field is seen is
+// a curve the user draws too (ScopeSource::showCurve): how visible a point
+// is, for fieldCurvePoints strengths of the wave there from still to full
+// swing. A rising line shows the dots; a falling one shows what is between
+// them instead, the places where the wave is still, like the sand on a
+// Chladni plate. Field shape is what the sound
+// makes in space: dots that stand still, or rings that spread from the
+// instance's position. Or it is a Spectrogram: no field in space but a
+// picture on the instance's plane, time across its square (now at the
+// right, Field span seconds ago at the left) and pitch up it (20 Hz to
+// 20 kHz), each point as bright as that pitch was loud then. Or a
+// Spectrum: the sound as it is now, laid out by pitch round the instance's
+// position, 20 Hz at the centre and 20 kHz one plane unit out in every
+// direction, so a tone is a circle on a plane and the shell of a ball in
+// the volume, as bright as it is loud. Or Pitch dots, which are the dots
+// themselves, standing waves and all, sorted the same way: at each
+// distance from the instance's position only the dots of the pitch that
+// belongs there, the large ones of 20 Hz at the centre and the fine ones
+// of 20 kHz where the field ends. For them Field fade is not a fade but
+// their size: how far out that is, 100 % being two plane units. Field EQ lets only a range of pitch into the field
+// at each distance from the instance's position: which pitch is a curve
+// the user draws (not a parameter: ScopeSource::fieldCurve), and Field EQ
+// width is how wide the range is. Field aperture gives the volume a depth
+// of field, like a camera lens: what is at the depth of Field focus is
+// sharp, and the rest blurs the more the further it is from there.
+//
+// Field polarity is what the instance's wave is multiplied by before it
+// goes into the field: 1 as it is, -1 turned over, 0 none of it. Field
+// interfere says how the fields of summed instances meet: off, each is
+// coloured by itself and they are added as light; on, their waves are added
+// first, so they can cancel, and the sum is coloured. Field saturation is
+// how pure the field's colours are: at 0 a band goes from its colour to the
+// opposite one through grey as its wave swings, at 100 it is the one or the
+// other and only darker where the wave is weak.
+//
+// Alpha is the alpha of the colours, in every mode: for curves and the
+// field on its planes how much of their light is added, in the field's
+// volume how much a point hides what is behind it.
+//
+// Invert turns the finished picture into its negative, as a photo editor
+// does: every colour becomes its opposite, black becomes white. It is of the
+// whole picture, guides and all layers, so it is on if any layer has it on.
+//
+// New parameters go at the end: a receiver takes as many values as it knows
+// and leaves the rest at their defaults.
+namespace scope
+{
+    enum ParamIndex
+    {
+        pMode = 0, pWindow, pDelay, pColour, pLayout, pAfterglow,
+        pBrightness, pContrast, pBlur, pLowCut, pHighCut, pGuides, pTest,
+        pBlend, pLayer, pDivide, pSwingMotion, pSwingRate, pSwingSync,
+        pPlane, pPlaneRotX, pPlaneRotY, pPlaneRotZ, pViewYaw, pViewPitch, pViewRoll,
+        pPosX, pPosY, pPosZ, pFieldFade, pFieldLock, pFieldSpeed, pFieldVolume, pFieldDensity, pFieldShape, pFieldEq, pFieldEqWidth, pFieldFocus, pFieldAperture,
+        pCamX, pCamY, pCamZ, pAlpha, pFieldPolarity, pFieldInterfere, pFieldSaturation, pFieldSpan, pInvert,
+        numParams
+    };
+
+    enum class ParamKind { choice, real, toggle };
+
+    // The Field EQ. Its curve says which pitch belongs at which distance: it
+    // has a value at fieldCurvePoints distances, evenly spaced from 0 to
+    // fieldCurveSpan plane units (and the last one from there on), each 0..1
+    // for a pitch from 20 Hz to about 20 kHz, in octaves. The sound is split
+    // into fieldBands bands of fieldBandOctaves octaves to do it with.
+    constexpr int fieldCurvePoints = 16;
+    constexpr float fieldCurveSpan = 2.0f;
+    constexpr int fieldBands = 8;
+    constexpr float fieldBandOctaves = 1.25f;
+
+    // The Spectrogram shape of the field: spectrumSize moments of sound,
+    // each as spectrumSize pitches over the octaves of the bands, lowest
+    // first. spectrumFloorDb is the loudness that is black; full scale
+    // (0 dB) is the brightest.
+    constexpr int spectrumSize = 128;
+    constexpr float spectrumFloorDb = -72.0f;
+
+    struct ParamInfo
+    {
+        const char* id;
+        const char* name;
+        ParamKind kind;
+        float min, max, step, skew, def;
+        const char* label;     // unit, for real parameters
+        const char* choices;   // '|' separated, for choice parameters
+        int cc;                // MIDI controller number (0..127 maps onto the full range), or -1 for none
+    };
+
+    enum class Layout { sideBySide = 0, overlay, midSide, mono };
+    enum class Mode { quadrature = 0, delayEmbed, swing, axis, field };
+    // What the samples of an instance are timed by. timeline: the host's
+    // song position, while it plays. hostTime: the host's audio clock, when
+    // it is stopped. Instances in one host agree on both.
+    enum class Clock { none = 0, timeline, hostTime };
+    enum class Plane { xy = 0, yz, xz };
+    enum class Blend { add = 0, screen, normal, lighten, multiply, darken, overlay, difference, exclusion, subtract };
+
+    // CCs 102..119, 85..90, 20..31, 14, 15, 3 and 9 are undefined in the MIDI spec, so they collide with nothing (25 is free again).
+    inline constexpr ParamInfo paramTable[numParams] = {
+        { "mode",       "Mode",       ParamKind::choice, 0.0f,  4.0f,     1.0f,  1.0f,  0.0f,     "",   "Quadrature|Delay embed|Swing|Axis|Field", 102 },
+        { "window",     "Window",     ParamKind::real,   5.0f,  300.0f,   0.1f,  0.5f,  60.0f,    "ms", "",                                103 },
+        { "delay",      "Delay",      ParamKind::real,   0.05f, 50.0f,    0.01f, 0.4f,  12.5f,    "ms", "",                                104 },
+        { "colour",     "Colour",     ParamKind::choice, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "Frequency hue|Fixed",             105 },
+        { "layout",     "Layout",     ParamKind::choice, 0.0f,  3.0f,     1.0f,  1.0f,  0.0f,     "",   "Side by side|Overlay|Mid / side|Mono", 106 },
+        { "afterglow",  "Afterglow",  ParamKind::real,   0.0f,  2000.0f,  1.0f,  0.4f,  250.0f,   "ms", "",                                107 },
+        { "brightness", "Brightness", ParamKind::real,   10.0f, 800.0f,   1.0f,  0.5f,  100.0f,   "%",  "",                                108 },
+        { "contrast",   "Contrast",   ParamKind::real,   25.0f, 300.0f,   1.0f,  0.6f,  100.0f,   "%",  "",                                109 },
+        { "blur",       "Blur",       ParamKind::real,   0.0f,  30.0f,    0.1f,  0.6f,  4.0f,     "px", "",                                110 },
+        { "lowcut",     "Low cut",    ParamKind::real,   20.0f, 20000.0f, 1.0f,  0.25f, 20.0f,    "Hz", "",                                111 },
+        { "highcut",    "High cut",   ParamKind::real,   20.0f, 20000.0f, 1.0f,  0.25f, 20000.0f, "Hz", "",                                112 },
+        { "guides",     "Guides",     ParamKind::toggle, 0.0f,  1.0f,     1.0f,  1.0f,  1.0f,     "",   "",                                113 },
+        { "test",       "Test tone",  ParamKind::toggle, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "",                                114 },
+        { "blend",      "Blend",      ParamKind::choice, 0.0f,  9.0f,     1.0f,  1.0f,  0.0f,     "",   "Add|Screen|Normal|Lighten|Multiply|Darken|Overlay|Difference|Exclusion|Subtract", 115 },
+        { "layer",      "Layer",      ParamKind::choice, 0.0f,  7.0f,     1.0f,  1.0f,  0.0f,     "",   "1|2|3|4|5|6|7|8",                 116 },
+        { "divide",     "Divide",     ParamKind::toggle, 0.0f,  1.0f,     1.0f,  1.0f,  0.0f,     "",   "",                                117 },
+        { "swingmotion","Swing motion", ParamKind::choice, 0.0f, 1.0f,    1.0f,  1.0f,  0.0f,     "",   "Back and forth|Round",            118 },
+        { "swingrate",  "Swing rate", ParamKind::real,   0.05f, 2000.0f,  0.01f, 0.3f,  1.0f,     "Hz", "",                                119 },
+        { "swingsync",  "Swing per window", ParamKind::toggle, 0.0f, 1.0f, 1.0f, 1.0f,  1.0f,     "",   "",                                85 },
+        { "plane",      "Plane",      ParamKind::choice, 0.0f,  2.0f,     1.0f,  1.0f,  0.0f,     "",   "XY|YZ|XZ",                        86 },
+        { "planerotx",  "Plane rot X", ParamKind::real, -180.0f, 180.0f,  0.1f,  1.0f,  0.0f,     "deg", "",                               87 },
+        { "planeroty",  "Plane rot Y", ParamKind::real, -180.0f, 180.0f,  0.1f,  1.0f,  0.0f,     "deg", "",                               88 },
+        { "planerotz",  "Plane rot Z", ParamKind::real, -180.0f, 180.0f,  0.1f,  1.0f,  0.0f,     "deg", "",                               89 },
+        { "viewyaw",    "View yaw",   ParamKind::real, -180.0f, 180.0f,   0.1f,  1.0f,  0.0f,     "deg", "",                               90 },
+        { "viewpitch",  "View pitch", ParamKind::real,  -90.0f,  90.0f,   0.1f,  1.0f,  0.0f,     "deg", "",                               20 },
+        { "viewroll",   "View roll",  ParamKind::real, -180.0f, 180.0f,   0.1f,  1.0f,  0.0f,     "deg", "",                               21 },
+        { "posx",       "Position X", ParamKind::real,   -2.0f,   2.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                22 },
+        { "posy",       "Position Y", ParamKind::real,   -2.0f,   2.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                23 },
+        { "posz",       "Position Z", ParamKind::real,   -2.0f,   2.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                24 },
+        { "fieldfade",  "Field fade", ParamKind::real,    0.0f, 100.0f,   0.1f,  1.0f,  45.0f,    "%",  "",                                26 },
+        { "fieldlock",  "Field lock", ParamKind::toggle,  0.0f,   1.0f,   1.0f,  1.0f,  1.0f,     "",   "",                                27 },
+        { "fieldspeed", "Field speed", ParamKind::real,   0.0f, 100.0f,   0.01f, 0.3f,  1.0f,     "%",  "",                                28 },
+        { "fieldvolume", "Field volume", ParamKind::toggle, 0.0f, 1.0f,   1.0f,  1.0f,  1.0f,     "",   "",                                29 },
+        { "fielddensity", "Field density", ParamKind::real, 0.0f, 100.0f, 0.1f,  1.0f,  50.0f,    "%",  "",                                30 },
+        { "fieldshape", "Field shape", ParamKind::choice, 0.0f,  4.0f,    1.0f,  1.0f,  0.0f,     "",   "Dots|Rings|Spectrogram|Spectrum|Pitch dots", 31 },
+        { "fieldeq",    "Field EQ",   ParamKind::toggle,  0.0f,   1.0f,   1.0f,  1.0f,  0.0f,     "",   "",                                14 },
+        { "fieldeqwidth", "Field EQ width", ParamKind::real, 0.3f, 10.0f, 0.01f, 0.5f,  2.0f,     "oct", "",                               15 },
+        { "fieldfocus", "Field focus", ParamKind::real,  -3.0f,   3.0f,   0.01f, 1.0f,  0.0f,     "",   "",                                3 },
+        { "fieldaperture", "Field aperture", ParamKind::real, 0.0f, 100.0f, 0.1f, 1.0f, 0.0f,     "%",  "",                                9 },
+        { "camx",       "Camera X",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
+        { "camy",       "Camera Y",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
+        { "camz",       "Camera Z",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
+        { "alpha",      "Alpha",      ParamKind::real,    0.0f, 100.0f,   0.1f,  1.0f,  100.0f,   "%",  "",                                -1 },
+        { "fieldpolarity", "Field polarity", ParamKind::real, -1.0f, 1.0f, 0.01f, 1.0f,  1.0f,     "",   "",                                -1 },
+        { "fieldinterfere", "Field interfere", ParamKind::toggle, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,    "",   "",                                -1 },
+        { "fieldsaturation", "Field saturation", ParamKind::real, 0.0f, 100.0f, 0.1f, 1.0f, 0.0f,  "%",  "",                                -1 },
+        { "fieldspan",  "Field span", ParamKind::real,    0.5f,  30.0f,   0.1f,  0.5f,  4.0f,     "s",  "",                                -1 },
+        { "invert",     "Invert",     ParamKind::toggle,  0.0f,   1.0f,   1.0f,  1.0f,  0.0f,     "",   "",                                -1 },
+    };
+}

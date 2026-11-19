@@ -20,12 +20,25 @@ public:
         writePos.store (w + (size_t) numSamples, std::memory_order_release);
     }
 
-    // Copies the most recent numSamples samples, oldest first.
-    void readLatest (float* dest, int numSamples) const noexcept
+    // Copies the most recent numSamples samples, oldest first. Returns the
+    // absolute position of the first one (see getWritePosition).
+    size_t readLatest (float* dest, int numSamples) const noexcept
     {
         const auto start = writePos.load (std::memory_order_acquire) - (size_t) numSamples;
         for (int i = 0; i < numSamples; ++i)
             dest[i] = data[(start + (size_t) i) & mask];
+        return start;
+    }
+
+    // Total samples ever pushed. Lets a second reader (the network sender)
+    // follow the stream without losing or repeating samples.
+    size_t getWritePosition() const noexcept { return writePos.load (std::memory_order_acquire); }
+
+    // Copies numSamples samples starting at an absolute position.
+    void read (size_t startPosition, float* dest, int numSamples) const noexcept
+    {
+        for (int i = 0; i < numSamples; ++i)
+            dest[i] = data[(startPosition + (size_t) i) & mask];
     }
 
     size_t size() const noexcept { return data.size(); }
