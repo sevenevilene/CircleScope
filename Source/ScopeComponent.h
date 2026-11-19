@@ -69,6 +69,15 @@ public:
     // The side the scene is shown from here (see Plane.h).
     void setPerspective (scope::Perspective from) { perspective.store ((int) from); }
 
+    // One eye's picture or both (see Plane.h), how deep, in percent, and
+    // how often Wiggle changes eye, a second.
+    void setStereo (scope::Stereo mode, int depthPercent = 100, int wigglesPerSecond = scope::wiggleRate)
+    {
+        stereoRate.store (juce::jlimit (1, scope::maxWiggleRate, wigglesPerSecond));
+        stereo.store (juce::jlimit (0, scope::numStereoModes - 1, (int) mode));
+        stereoDepth.store (juce::jlimit (0, scope::maxStereoDepth, depthPercent));
+    }
+
     // Small copies of the finished frame, for remote monitoring. The callback
     // runs on the render thread. An interval of 0 turns previews off.
     std::function<void (const juce::Image&)> onPreview;
@@ -164,6 +173,10 @@ private:
     std::vector<juce::uint8> previewPixels;
     std::atomic<int> previewIntervalMs { 0 };
     std::atomic<int> perspective { 0 };              // scope::Perspective
+    std::atomic<int> stereo { 0 }, stereoDepth { 100 };   // scope::Stereo, and percent
+    std::atomic<int> stereoRate { scope::wiggleRate };    // Wiggle's changes of eye a second
+    float eyeX = 0.0f;                               // the eye being drawn: how far to the side of the camera's
+    float squeeze = 1.0f;                            // and how much narrower its pixels are than its picture
     double lastFrameMs = 0.0, lastPreviewMs = 0.0, fpsWindowStartMs = 0.0;
     int framesInWindow = 0;
     std::atomic<float> framesPerSecond { 0.0f };

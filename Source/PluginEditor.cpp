@@ -9,6 +9,7 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
 {
     addAndMakeVisible (scope);
     scope.addAndMakeVisible (cameraPad);
+    cameraPad.setStereoSettings (&p.stereoMode, &p.stereoDepth, &p.stereoRate);
     addAndMakeVisible (controls);
     controls.onHeightChanged = [this] { resized(); };
 
@@ -25,9 +26,13 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
 }
 
 // While any instance in the host is in full screen, no editor draws its
-// scope: this one's, or another instance's that is open beside it.
+// scope: this one's, or another instance's that is open beside it. And the
+// scopes follow the instance's stereo setting.
 void CircleScopeEditor::timerCallback()
 {
+    scope.setStereo ((scope::Stereo) scopeProcessor.stereoMode.load(), scopeProcessor.stereoDepth.load(), scopeProcessor.stereoRate.load());
+    if (fullScreen != nullptr)
+        fullScreen->showStereo();
     scope.setVisible (FullScreenWindow::numShowing.load() == 0);
 }
 

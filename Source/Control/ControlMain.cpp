@@ -20,6 +20,8 @@ struct OutputState
 {
     int stream = 1, cols = 1, rows = 1, col = 0, row = 0, spanW = 1, spanH = 1;
     int perspective = 0;   // scope::Perspective; a node from before there was one says nothing, which is Front
+    int stereo = 0, depth = 100;   // scope::Stereo and its depth in percent; likewise, which is Mono
+    int rate = scope::wiggleRate;  // Wiggle's changes of eye a second
     int width = 0, height = 0, fps = 0, rxAgeMs = -1, lost = 0;
     juce::Image preview;
 };
@@ -147,6 +149,9 @@ private:
                     state.spanW = (int) o["spanw"];
                     state.spanH = (int) o["spanh"];
                     state.perspective = juce::jlimit (0, scope::numPerspectives - 1, (int) o["perspective"]);
+                    state.stereo = juce::jlimit (0, scope::numStereoModes - 1, (int) o["stereo"]);
+                    state.rate = o.hasProperty ("rate") ? juce::jlimit (1, scope::maxWiggleRate, (int) o["rate"]) : scope::wiggleRate;
+                    state.depth = o.hasProperty ("depth") ? juce::jlimit (0, scope::maxStereoDepth, (int) o["depth"]) : 100;
                     state.width = (int) o["width"];
                     state.height = (int) o["height"];
                     state.fps = (int) o["fps"];
@@ -275,6 +280,8 @@ public:
             auto text = "stream " + juce::String (s.stream) + (link.testTone ? " (test tone)" : receiving ? "" : " (no signal)");
             if (s.perspective > 0)
                 text << "   " << juce::String (scope::perspectiveNames[s.perspective]).toLowerCase();
+            if (s.stereo > 0)
+                text << "   " << juce::String (scope::stereoNames[s.stereo]).toLowerCase();
             if (s.cols * s.rows > 1)
                 text << "   wall " << s.cols << "x" << s.rows << " @ " << (s.col + 1) << "," << (s.row + 1);
             text << "   " << s.width << "x" << s.height << "   " << s.fps << " fps";
@@ -304,6 +311,18 @@ public:
         for (int i = 0; i < scope::numPerspectives; ++i)
             viewBox.addItem (scope::perspectiveNames[i], i + 1);
         viewBox.onChange = [this] { sendSetting ("perspective", viewBox.getSelectedId() - 1); };
+        for (int i = 0; i < scope::numStereoModes; ++i)
+            stereoBox.addItem (scope::stereoNames[i], i + 1);
+        stereoBox.onChange = [this] { sendSetting ("stereo", stereoBox.getSelectedId() - 1); };
+        for (int percent : scope::stereoDepths)
+            depthBox.addItem ("Depth " + juce::String (percent) + "%", percent);
+        depthBox.onChange = [this] { sendSetting ("depth", depthBox.getSelectedId()); };
+        for (int perSecond : scope::wiggleRates)
+            rateBox.addItem (juce::String (perSecond) + " / s", perSecond);
+        rateBox.onChange = [this] { sendSetting ("rate", rateBox.getSelectedId()); };
+        rateBox.setTooltip ("How often Wiggle changes eye");
+        stereoBox.setTooltip ("Stereo: this output shows one eye's picture, or both side by side");
+        depthBox.setTooltip ("How far apart the two eyes are");
 
         auto setUpNumber = [this] (Number& n, const char* text, const char* key, bool oneBased)
         {
@@ -337,7 +356,7 @@ public:
         selectionLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
         rendererLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.5f));
         rendererLabel.setJustificationType (juce::Justification::centredRight);
-        for (juce::Component* c : std::initializer_list<juce::Component*> { &selectionLabel, &rendererLabel, &streamBox, &viewBox, &identifyButton, &testButton })
+        for (juce::Component* c : std::initializer_list<juce::Component*> { &selectionLabel, &rendererLabel, &streamBox, &viewBox, &stereoBox, &depthBox, &rateBox, &identifyButton, &testButton })
             addAndMakeVisible (c);
 
         beacons = std::make_unique<BeaconListener> ([this] (juce::String address, int port, juce::String name)
@@ -401,6 +420,12 @@ public:
         streamBox.setBounds (rowArea.removeFromLeft (110));
         rowArea.removeFromLeft (8);
         viewBox.setBounds (rowArea.removeFromLeft (86));
+        rowArea.removeFromLeft (8);
+        stereoBox.setBounds (rowArea.removeFromLeft (112));
+        rowArea.removeFromLeft (8);
+        depthBox.setBounds (rowArea.removeFromLeft (104));
+        rowArea.removeFromLeft (8);
+        rateBox.setBounds (rowArea.removeFromLeft (76));
         rowArea.removeFromLeft (8);
 
         auto place = [&rowArea] (Number& n, int labelWidth)
@@ -628,7 +653,7 @@ private:
         const auto* link = selectedLink();
         const bool haveState = link != nullptr && selectedTile->output < (int) link->outputs.size();
 
-        for (juce::Component* c : std::initializer_list<juce::Component*> { &streamBox, &viewBox, &identifyButton, &testButton, &cols.slider, &rows.slider,
+        for (juce::Component* c : std::initializer_list<juce::Component*> { &streamBox, &viewBox, &stereoBox, &depthBox, &rateBox, &identifyButton, &testButton, &cols.slider, &rows.slider,
                                                                             &col.slider, &row.slider, &spanW.slider, &spanH.slider })
             c->setEnabled (haveState && link->connected);
 
@@ -657,6 +682,13 @@ private:
         };
         streamBox.setSelectedId (s.stream, juce::dontSendNotification);
         viewBox.setSelectedId (s.perspective + 1, juce::dontSendNotification);
+        stereoBox.setSelectedId (s.stereo + 1, juce::dontSendNotification);
+        depthBox.setSelectedId (s.depth, juce::dontSendNotification);
+        if (depthBox.getSelectedId() == 0)
+            depthBox.setText ("Depth " + juce::String (s.depth) + "%", juce::dontSendNotification);
+        rateBox.setSelectedId (s.rate, juce::dontSendNotification);
+        if (rateBox.getSelectedId() == 0)
+            rateBox.setText (juce::String (s.rate) + " / s", juce::dontSendNotification);
         show (cols, s.cols);
         show (rows, s.rows);
         show (col, s.col + 1);
@@ -672,7 +704,7 @@ private:
     bool dirty = false, refreshing = false;
 
     juce::Label selectionLabel, rendererLabel;
-    juce::ComboBox streamBox, viewBox;
+    juce::ComboBox streamBox, viewBox, stereoBox, depthBox, rateBox;
     Number cols, rows, col, row, spanW, spanH;
     juce::TextButton identifyButton { "Identify" };
     juce::ToggleButton testButton { "Test tone" };

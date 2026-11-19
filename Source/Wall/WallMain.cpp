@@ -32,6 +32,9 @@ struct WallConfig
     int cols = 2, rows = 2;
     std::vector<int> streams { 1, 2, 3, 4 };   // one per cell, row by row; 0 = off
     std::vector<int> views { 0, 0, 0, 0 };     // likewise: the side each shows its scene from (scope::Perspective)
+    std::vector<int> stereos { 0, 0, 0, 0 };   // and the eye, or eyes, it shows it for (scope::Stereo)
+    int depth = 100;                           // how deep stereo is, in percent
+    int rate = scope::wiggleRate;              // and how often Wiggle changes eye, a second
     juce::Rectangle<int> windowBounds { 80, 80, 1280, 720 };
     bool fullScreen = false;
 
@@ -46,6 +49,7 @@ struct WallConfig
         for (int i = 0; i < numCells(); ++i)
             streams.push_back (i % net::maxStreams + 1);
         views.assign ((size_t) numCells(), 0);
+        stereos.assign ((size_t) numCells(), 0);
     }
 
     void load (const juce::File& file)
@@ -61,6 +65,11 @@ struct WallConfig
         if (const auto* list = saved["views"].getArray(); list != nullptr && list->size() == numCells())
             for (int i = 0; i < numCells(); ++i)
                 views[(size_t) i] = juce::jlimit (0, scope::numPerspectives - 1, (int) list->getReference (i));
+        if (const auto* list = saved["stereo"].getArray(); list != nullptr && list->size() == numCells())
+            for (int i = 0; i < numCells(); ++i)
+                stereos[(size_t) i] = juce::jlimit (0, scope::numStereoModes - 1, (int) list->getReference (i));
+        depth = juce::jlimit (0, scope::maxStereoDepth, (int) saved.getProperty ("depth", depth));
+        rate = juce::jlimit (1, scope::maxWiggleRate, (int) saved.getProperty ("rate", rate));
 
         if (const auto* b = saved["window"].getArray(); b != nullptr && b->size() == 4)
             windowBounds = { (int) (*b)[0], (int) (*b)[1], juce::jmax (320, (int) (*b)[2]), juce::jmax (200, (int) (*b)[3]) };
@@ -77,11 +86,18 @@ struct WallConfig
         for (int view : views)
             viewList.add (view);
 
+        juce::Array<juce::var> stereoList;
+        for (int stereo : stereos)
+            stereoList.add (stereo);
+
         juce::DynamicObject::Ptr root = new juce::DynamicObject();
         root->setProperty ("cols", cols);
         root->setProperty ("rows", rows);
         root->setProperty ("streams", list);
         root->setProperty ("views", viewList);
+        root->setProperty ("stereo", stereoList);
+        root->setProperty ("depth", depth);
+        root->setProperty ("rate", rate);
         root->setProperty ("window", juce::Array<juce::var> { windowBounds.getX(), windowBounds.getY(),
                                                               windowBounds.getWidth(), windowBounds.getHeight() });
         root->setProperty ("fullscreen", fullScreen);
@@ -124,6 +140,21 @@ public:
             streamBox.addItem ("Stream " + juce::String (i), i + 1);
         for (int i = 0; i < scope::numPerspectives; ++i)
             viewBox.addItem (scope::perspectiveNames[i], i + 1);
+        for (int i = 0; i < scope::numStereoModes; ++i)
+            stereoBox.addItem (scope::stereoNames[i], i + 1);
+        for (int percent : scope::stereoDepths)
+            depthBox.addItem ("Depth " + juce::String (percent) + "%", percent);
+        depthBox.setSelectedId (config.depth, juce::dontSendNotification);
+        if (depthBox.getSelectedId() == 0)
+            depthBox.setText ("Depth " + juce::String (config.depth) + "%", juce::dontSendNotification);
+        for (int perSecond : scope::wiggleRates)
+            rateBox.addItem (juce::String (perSecond) + " / s", perSecond);
+        rateBox.setSelectedId (config.rate, juce::dontSendNotification);
+        if (rateBox.getSelectedId() == 0)
+            rateBox.setText (juce::String (config.rate) + " / s", juce::dontSendNotification);
+        rateBox.setTooltip ("How often Wiggle changes eye, for every cell");
+        stereoBox.setTooltip ("Stereo: this cell shows one eye's picture, or both side by side");
+        depthBox.setTooltip ("How far apart the two eyes are, for every cell in stereo");
 
         colsLabel.setText ("Columns", juce::dontSendNotification);
         rowsLabel.setText ("Rows", juce::dontSendNotification);
@@ -135,11 +166,20 @@ public:
         colsBox.onChange = rowsBox.onChange = [this] { setGrid (colsBox.getSelectedId(), rowsBox.getSelectedId()); };
         streamBox.onChange = [this] { setCellStream (selected, streamBox.getSelectedId() - 1); };
         viewBox.onChange = [this] { setCellView (selected, viewBox.getSelectedId() - 1); };
+        stereoBox.onChange = [this] { setCellStereo (selected, stereoBox.getSelectedId() - 1); };
+        depthBox.onChange = rateBox.onChange = [this]
+        {
+            config.depth = depthBox.getSelectedId() > 0 ? depthBox.getSelectedId() : config.depth;
+            config.rate = rateBox.getSelectedId() > 0 ? rateBox.getSelectedId() : config.rate;
+            for (int i = 0; i < (int) cells.size(); ++i)
+                rebuildCell (i);
+            actions.configChanged();
+        };
         testButton.onClick = [this] { receiver.testTone.store (testButton.getToggleState()); };
         fullScreenButton.onClick = [this] { actions.toggleFullScreen(); };
 
         for (juce::Component* c : std::initializer_list<juce::Component*> { &colsLabel, &colsBox, &rowsLabel, &rowsBox, &cellLabel,
-                                                                            &streamBox, &viewBox, &testButton, &fullScreenButton, &hint })
+                                                                            &streamBox, &viewBox, &stereoBox, &depthBox, &rateBox, &testButton, &fullScreenButton, &hint })
         {
             c->setWantsKeyboardFocus (false);   // the keys stay with the window
             bar.addAndMakeVisible (c);
@@ -199,9 +239,10 @@ public:
             }
 
             g.setColour (juce::Colours::white.withAlpha (i == selected ? 0.95f : 0.6f));
-            const int view = config.views[(size_t) i];
+            const int view = config.views[(size_t) i], stereo = config.stereos[(size_t) i];
             g.drawText (stream == 0 ? juce::String ("Empty")
-                                    : "Stream " + juce::String (stream) + (view > 0 ? juce::String ("  ") + scope::perspectiveNames[view] : juce::String()),
+                                    : "Stream " + juce::String (stream) + (view > 0 ? juce::String ("  ") + scope::perspectiveNames[view] : juce::String())
+                                                                        + (stereo > 0 ? juce::String ("  ") + scope::stereoNames[stereo] : juce::String()),
                         caption, juce::Justification::centredLeft);
             g.setColour (statusColour);
             g.drawText (status, caption, juce::Justification::centredRight);
@@ -225,6 +266,9 @@ public:
             place (cellLabel, 50);
             place (streamBox, 110);
             place (viewBox, 86);
+            place (stereoBox, 112);
+            place (depthBox, 104);
+            place (rateBox, 76);
             row.removeFromLeft (12);
             place (testButton, 96);
             place (fullScreenButton, 130);
@@ -272,6 +316,7 @@ public:
             case 's': setSetupVisible (! setupVisible); return true;
             case 't': receiver.testTone.store (! receiver.testTone.load()); return true;
             case 'v': if (setupVisible) setCellView (selected, (config.views[(size_t) selected] + 1) % scope::numPerspectives); return true;
+            case 'e': if (setupVisible) setCellStereo (selected, (config.stereos[(size_t) selected] + 1) % scope::numStereoModes); return true;
             case '+':
             case '=': if (setupVisible) setCellStream (selected, juce::jmin (net::maxStreams, stream + 1)); return true;
             case '-': if (setupVisible) setCellStream (selected, juce::jmax (0, stream - 1)); return true;
@@ -411,7 +456,10 @@ private:
         }
 
         if (cell.scope != nullptr)
+        {
             cell.scope->setPerspective ((scope::Perspective) config.views[(size_t) index]);
+            cell.scope->setStereo ((scope::Stereo) config.stereos[(size_t) index], config.depth, config.rate);
+        }
     }
 
     void setGrid (int cols, int rows)
@@ -448,12 +496,24 @@ private:
         actions.configChanged();
     }
 
+    void setCellStereo (int index, int stereo)
+    {
+        if (config.stereos[(size_t) index] == stereo)
+            return;
+
+        config.stereos[(size_t) index] = stereo;
+        rebuildCell (index);
+        select (index);
+        actions.configChanged();
+    }
+
     void select (int index)
     {
         selected = index;
         cellLabel.setText ("Cell " + juce::String (index + 1), juce::dontSendNotification);
         streamBox.setSelectedId (cells[(size_t) index].stream + 1, juce::dontSendNotification);
         viewBox.setSelectedId (config.views[(size_t) index] + 1, juce::dontSendNotification);
+        stereoBox.setSelectedId (config.stereos[(size_t) index] + 1, juce::dontSendNotification);
         repaint();
     }
 
@@ -520,7 +580,7 @@ private:
 
     juce::Component bar;
     juce::Label colsLabel, rowsLabel, cellLabel, hint;
-    juce::ComboBox colsBox, rowsBox, streamBox, viewBox;
+    juce::ComboBox colsBox, rowsBox, streamBox, viewBox, stereoBox, depthBox, rateBox;
     juce::ToggleButton testButton { "Test tone" };
     juce::TextButton fullScreenButton;
 
@@ -552,7 +612,7 @@ public:
                          "  --name NAME      name announced on the network (default: host name)\n"
                          "  --config FILE    where the settings are kept\n"
                          "  --test           start with the local test tone on\n"
-                         "Keys: F full screen, Esc leave it, Tab/S setup bar, arrows select a cell, +/- its stream, V its view, T test tone, Q quit\n";
+                         "Keys: F full screen, Esc leave it, Tab/S setup bar, arrows select a cell, +/- its stream, V its view, E its eye (stereo), T test tone, Q quit\n";
             quit();
             return;
         }

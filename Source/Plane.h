@@ -166,21 +166,76 @@ namespace scope
     constexpr int numPerspectives = 6;
     inline constexpr const char* perspectiveNames[numPerspectives] = { "Front", "Back", "Top", "Bottom", "Left", "Right" };
 
-    inline Mat3 perspectiveTurn (Perspective from) noexcept
+    // The camera angles that look at the scene from a side. The plugin's
+    // camera pad sets them (View yaw / pitch), and a receiver's own side is
+    // the same turn.
+    struct ViewAngles { float yaw = 0.0f, pitch = 0.0f; };
+
+    inline ViewAngles perspectiveAngles (Perspective from) noexcept
     {
         switch (from)
         {
-            case Perspective::back:   return Mat3::aboutY (180.0f);
-            case Perspective::top:    return Mat3::aboutX (90.0f);     // -z is up, as on the XZ plane
-            case Perspective::bottom: return Mat3::aboutX (-90.0f);
-            case Perspective::left:   return Mat3::aboutY (90.0f);
-            case Perspective::right:  return Mat3::aboutY (-90.0f);
+            case Perspective::back:   return { 180.0f, 0.0f };
+            case Perspective::top:    return { 0.0f, 90.0f };      // -z is up, as on the XZ plane
+            case Perspective::bottom: return { 0.0f, -90.0f };
+            case Perspective::left:   return { 90.0f, 0.0f };
+            case Perspective::right:  return { -90.0f, 0.0f };
             case Perspective::front:  break;
         }
         return {};
     }
 
+    inline Mat3 perspectiveTurn (Perspective from) noexcept
+    {
+        const auto angles = perspectiveAngles (from);
+        return cameraOrientation (angles.yaw, angles.pitch, 0.0f);
+    }
+
     // How far the eye is from the centre of a panel, in plane units. Sets
     // how strong the perspective is.
     constexpr float eyeDistance = 4.0f;
+
+    // Stereo: the scene drawn for one eye, or for both. An eye stands to
+    // the side of the camera's eye and looks through the same window, the
+    // panel at depth 0. So what lies at depth 0 (the flat picture) is the
+    // same for both eyes and sits on the screen; what is nearer comes out
+    // of it and what is further lies behind it. Like the side, it is the
+    // receiver's own: it belongs to the screen, not to the scene.
+    //
+    //   anaglyph           both in one picture, for red and cyan glasses: the
+    //                      left eye's in red, the right eye's in cyan, each
+    //                      by its brightness, since the colours go to the
+    //                      glasses. What is on the screen plane stays white
+    //                      (the two fall on each other); the rest splits
+    //                      into a red and a cyan picture, further apart the
+    //                      further it is from the plane
+    //   wiggle             one picture that goes back and forth between the
+    //                      two eyes' some times a second. The jump reads as
+    //                      depth with no glasses, on any screen, and the
+    //                      colours stay; what is on the screen plane keeps
+    //                      still. Each eye has its own afterglow, so they
+    //                      do not smear into each other. It goes by the
+    //                      clock, so screens whose clocks agree jump together
+    //   leftEye, rightEye  one eye's picture: for a pair of projectors, or
+    //                      two cells of a wall
+    //   sideBySide         both, left eye on the left, each half a picture
+    //                      of its own shape: for a viewer, or two projectors
+    //                      on one wide output
+    //   crossed            the same with the eyes changed over, to look at
+    //                      with crossed eyes on any screen
+    //   squeezed           both in one picture's shape, each squeezed to
+    //                      half its width: what a 3D TV or projector takes
+    enum class Stereo { off = 0, anaglyph, wiggle, leftEye, rightEye, sideBySide, crossed, squeezed };
+    constexpr int numStereoModes = 8;
+    inline constexpr const char* stereoNames[numStereoModes] = { "Mono", "Red / cyan", "Wiggle", "Left eye", "Right eye", "Side by side", "Cross-eyed", "3D TV" };
+
+    // How far apart the eyes are at a depth of 100%, in plane units: a
+    // thirtieth of the distance to the screen, as a viewer's are.
+    constexpr float eyeSeparation = eyeDistance / 30.0f;
+    constexpr int maxStereoDepth = 300;                  // percent
+    inline constexpr int stereoDepths[] = { 25, 50, 75, 100, 150, 200, 300 };   // the ones offered
+
+    // How often Wiggle changes eye, a second.
+    constexpr int wiggleRate = 8, maxWiggleRate = 30;
+    inline constexpr int wiggleRates[] = { 3, 4, 6, 8, 10, 12, 16 };
 }

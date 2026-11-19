@@ -40,6 +40,13 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
+    // Stereo on this instance's own scopes, the editor's and the full
+    // screen one: scope::Stereo, how deep in percent, and how often Wiggle
+    // changes eye, a second. It is about the
+    // screen, not the scene, so it is not a parameter and is not sent to the
+    // network; a wall or a node has its own. Saved with the session.
+    std::atomic<int> stereoMode { 0 }, stereoDepth { 100 }, stereoRate { scope::wiggleRate };
+
     // Steps a choice or toggle parameter to its next value (keyboard shortcuts).
     void cycleParameter (int paramIndex);
 

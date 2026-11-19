@@ -17,7 +17,10 @@
 // all goes through the plugin's parameters, as gestures, so a host can
 // record a flight as automation and play it back. Reset (or a double-click
 // on the pad) puts the camera back where it started: straight on, at the
-// centre, with no roll.
+// centre, with no roll. View has the sides to look from: Front, Back, Top,
+// Bottom, Left and Right turn the camera there (View yaw / pitch, no roll),
+// about the point it looks at. The same menu has the stereo setting of this
+// instance's own scopes (see Plane.h): which eyes, and how deep.
 //
 // It only shows while the mouse is over the scope.
 class CameraPad : public juce::Component,
@@ -36,7 +39,7 @@ public:
         rollParam = state.getParameter ("viewroll");
 
         setSize (width, height);
-        setTooltip ("Camera. Orbit: go round the point it looks at. Look: turn it where it stands. Move: hold an arrow to travel; hold the one pointing away and steer with Look to fly through. Reset puts the view back");
+        setTooltip ("Camera. Orbit: go round the point it looks at. Look: turn it where it stands. Move: hold an arrow to travel; hold the one pointing away and steer with Look to fly through. View looks from a side: front, back, top, bottom, left or right, and has the stereo setting. Reset puts the view back");
         startTimerHz (10);
     }
 
@@ -79,13 +82,16 @@ public:
             g.fillPath (head);
         }
 
-        g.setColour (juce::Colours::white.withAlpha (0.06f));
-        g.fillRoundedRectangle (resetArea, 6.0f);
-        g.setColour (line);
-        g.drawRoundedRectangle (resetArea, 6.0f, 1.0f);
-        g.setColour (solid);
         g.setFont (12.0f);
-        g.drawText ("Reset", resetArea, juce::Justification::centred);
+        for (const auto& [area, name] : { std::pair { viewArea, "View" }, std::pair { resetArea, "Reset" } })
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.06f));
+            g.fillRoundedRectangle (area, 6.0f);
+            g.setColour (line);
+            g.drawRoundedRectangle (area, 6.0f, 1.0f);
+            g.setColour (solid);
+            g.drawText (name, area, juce::Justification::centred);
+        }
 
         g.setColour (juce::Colours::white.withAlpha (0.7f));
         g.setFont (11.0f);
@@ -100,6 +106,12 @@ public:
         if (resetArea.contains (e.position))
         {
             resetCamera();
+            return;
+        }
+
+        if (viewArea.contains (e.position))
+        {
+            showViewMenu();
             return;
         }
 
@@ -149,7 +161,31 @@ public:
         repaint();
     }
 
-    void mouseDoubleClick (const juce::MouseEvent&) override { resetCamera(); }
+    // Where this instance keeps the stereo setting of its scopes: a
+    // scope::Stereo, a depth in percent and Wiggle's changes of eye a
+    // second. They must outlive the pad.
+    void setStereoSettings (std::atomic<int>* mode, std::atomic<int>* depth, std::atomic<int>* rate)
+    {
+        stereoRate = rate;
+        stereoMode = mode;
+        stereoDepth = depth;
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (! viewArea.contains (e.position))
+            resetCamera();
+    }
+
+    // Look at the scene from a side: the camera goes there about the point
+    // it looks at, which stays, and loses its roll.
+    void lookFrom (scope::Perspective from)
+    {
+        const auto angles = scope::perspectiveAngles (from);
+        setParam (params[yaw], angles.yaw);
+        setParam (params[pitch], angles.pitch);
+        setParam (rollParam, 0.0f);
+    }
 
     // Straight on, at the centre of the scene, with no roll.
     void resetCamera()
@@ -169,14 +205,78 @@ public:
     }
 
 private:
+    static void setParam (juce::RangedAudioParameter* p, float value)
+    {
+        if (p == nullptr)
+            return;
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (value));
+        p->endChangeGesture();
+    }
+
+    // The sides, with the one the camera is at ticked, and the stereo setting.
+    void showViewMenu()
+    {
+        auto now = [] (juce::RangedAudioParameter* p) { return p != nullptr ? p->convertFrom0to1 (p->getValue()) : 0.0f; };
+        const float yawNow = now (params[yaw]), pitchNow = now (params[pitch]);
+        const bool level = std::abs (now (rollParam)) < 0.05f;
+
+        juce::PopupMenu menu;
+        for (int i = 0; i < scope::numPerspectives; ++i)
+        {
+            const auto angles = scope::perspectiveAngles ((scope::Perspective) i);
+            const bool there = level && std::abs (pitchNow - angles.pitch) < 0.05f
+                                     && std::abs (std::remainder (yawNow - angles.yaw, 360.0f)) < 0.05f;
+            menu.addItem (i + 1, scope::perspectiveNames[i], true, there);
+        }
+
+        if (stereoMode != nullptr && stereoDepth != nullptr && stereoRate != nullptr)
+        {
+            menu.addSeparator();
+            menu.addSectionHeader ("Stereo");
+            for (int i = 0; i < scope::numStereoModes; ++i)
+                menu.addItem (firstStereoId + i, scope::stereoNames[i], true, stereoMode->load() == i);
+
+            juce::PopupMenu depths;
+            for (int percent : scope::stereoDepths)
+                depths.addItem (firstDepthId + percent, juce::String (percent) + "%", true, stereoDepth->load() == percent);
+            menu.addSubMenu ("Depth", depths);
+
+            juce::PopupMenu rates;
+            for (int perSecond : scope::wiggleRates)
+                rates.addItem (firstRateId + perSecond, juce::String (perSecond) + " a second", true, stereoRate->load() == perSecond);
+            menu.addSubMenu ("Wiggle rate", rates);
+        }
+
+        juce::Component::SafePointer<CameraPad> safeThis (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this)
+                                                      .withTargetScreenArea (localAreaToGlobal (viewArea.toNearestInt())),
+                            [safeThis] (int chosen)
+                            {
+                                if (safeThis == nullptr || chosen <= 0)
+                                    return;
+
+                                if (chosen >= firstRateId)
+                                    safeThis->stereoRate->store (chosen - firstRateId);
+                                else if (chosen >= firstDepthId)
+                                    safeThis->stereoDepth->store (chosen - firstDepthId);
+                                else if (chosen >= firstStereoId)
+                                    safeThis->stereoMode->store (chosen - firstStereoId);
+                                else
+                                    safeThis->lookFrom ((scope::Perspective) (chosen - 1));
+                            });
+    }
+
     enum { yaw = 0, pitch, camX, camY, camZ, numValues };
     enum { right = 0, left, up, down, forward, back, numArrows };
+    static constexpr int firstStereoId = 100, firstDepthId = 1000, firstRateId = 2000;   // in the View menu
     static constexpr int firstArrow = 2;                 // "held": 0 orbit, 1 look, then the arrows
     static constexpr float stickRadius = 32.0f, stickThrow = 23.0f;
     static constexpr float turnRate = 70.0f;             // degrees a second, with a stick right out
     static constexpr float moveRate = 1.5f;              // plane units a second
     static inline const juce::Point<float> arrowCentre { 204.0f, 42.0f };
-    static inline const juce::Rectangle<float> resetArea { 252.0f, 30.0f, 48.0f, 24.0f };
+    static inline const juce::Rectangle<float> viewArea { 252.0f, 14.0f, 48.0f, 24.0f };
+    static inline const juce::Rectangle<float> resetArea { 252.0f, 46.0f, 48.0f, 24.0f };
 
     static juce::Point<float> stickCentre (int i) { return { i == 0 ? 44.0f : 124.0f, 42.0f }; }
 
@@ -271,6 +371,9 @@ private:
 
     juce::RangedAudioParameter* params[numValues] {};
     std::atomic<float>* roll = nullptr;
+    std::atomic<int>* stereoMode = nullptr;
+    std::atomic<int>* stereoDepth = nullptr;
+    std::atomic<int>* stereoRate = nullptr;
     juce::RangedAudioParameter* rollParam = nullptr;
     double value[numValues] {};
     juce::Point<float> orbit, look;                      // the sticks: x right, y up, -1..1

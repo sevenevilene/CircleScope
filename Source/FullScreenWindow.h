@@ -14,7 +14,7 @@
 // Keys:
 //   Esc / F   exit (so does a double-click)
 //   M         mode            L   layout          C   colour
-//   G         guides on/off   T   test tone
+//   G         guides on/off   T   test tone       E   stereo: the eyes
 // Everything else is driven from the editor, host automation or MIDI.
 class FullScreenWindow : public juce::Component
 {
@@ -29,6 +29,7 @@ public:
         setOpaque (true);
         setWantsKeyboardFocus (true);
         addAndMakeVisible (scope);
+        showStereo();
 
         scope.onDoubleClick = [this] { requestExit(); };
         scope.setMouseCursor (juce::MouseCursor::NoCursor);
@@ -54,6 +55,9 @@ public:
     void paint (juce::Graphics& g) override { g.fillAll (juce::Colours::black); }
     void resized() override { scope.setBounds (getLocalBounds()); }
 
+    // Brings the scope in line with the instance's stereo setting.
+    void showStereo() { scope.setStereo ((scope::Stereo) processor.stereoMode.load(), processor.stereoDepth.load(), processor.stereoRate.load()); }
+
     bool keyPressed (const juce::KeyPress& key) override
     {
         if (key == juce::KeyPress::escapeKey)
@@ -70,6 +74,7 @@ public:
             case 'c': processor.cycleParameter (scope::pColour); return true;
             case 'g': processor.cycleParameter (scope::pGuides); return true;
             case 't': processor.cycleParameter (scope::pTest); return true;
+            case 'e': processor.stereoMode.store ((processor.stereoMode.load() + 1) % scope::numStereoModes); showStereo(); return true;
             default:  return false;
         }
     }

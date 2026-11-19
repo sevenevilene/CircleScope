@@ -20,13 +20,14 @@ namespace
         uniform mat3 orient;      // the points' space (the scene, or a plane) to the viewer's
         uniform vec3 shift;       // and where its centre is for the viewer
         uniform float eye;        // distance of the eye from the panel's centre
+        uniform float eyeX;       // and how far it is to the side (stereo)
         uniform float halfWidth;  // half a line's thickness, in panel units
         uniform vec4 transform;   // panel to clip space: xy scale, zw offset
         varying vec4 vColour;
 
         vec2 project (vec3 q)
         {
-            return q.xy * (eye / (eye - q.z));
+            return vec2 (q.x - eyeX, q.y) * (eye / (eye - q.z)) + vec2 (eyeX, 0.0);
         }
 
         void main()
@@ -78,6 +79,7 @@ namespace
         uniform mat3 camera;      // the scene to the viewer's space:
         uniform vec3 cameraShift; // turned, then shifted
         uniform float eye;
+        uniform float eyeX;       // how far the eye is to the side (stereo)
         uniform vec4 transform;   // panel to clip space: xy scale, zw offset
         varying vec3 where;       // this point in the scene
 
@@ -86,7 +88,8 @@ namespace
             where = origin + plane * vec3 (position, 0.0);
             vec3 q = camera * where + cameraShift;
             float w = eye - q.z;
-            gl_Position = vec4 (q.xy * eye * transform.xy + transform.zw * w, 0.0, w);
+            vec2 seen = vec2 (q.x - eyeX, q.y) * eye + vec2 (eyeX, 0.0) * w;
+            gl_Position = vec4 (seen * transform.xy + transform.zw * w, 0.0, w);
         }
     )";
 
@@ -395,6 +398,7 @@ namespace
         uniform mat3 cameraBack;  // the viewer's space to the scene, for directions
         uniform vec3 eyeAt;       // where the eye is in the scene
         uniform float eye;
+        uniform float eyeX;       // how far the eye is to the side (stereo); eyeAt has it already
         uniform float bound;      // radius of the ball that holds the field
         uniform float endless;    // 1: nothing holds it, it goes on for ever
         uniform float density;
@@ -405,7 +409,7 @@ namespace
         void main()
         {
             vec3 start = eyeAt;
-            vec3 sight = normalize (vec3 (panel, -eye));
+            vec3 sight = normalize (vec3 (panel.x - eyeX, panel.y, -eye));
             vec3 dir = cameraBack * sight;
             float b = dot (start, dir);
             float h = b * b - dot (start, start) + bound * bound;
@@ -584,11 +588,13 @@ namespace
     constexpr const char* copyFragmentShader = R"(
         uniform sampler2D image;
         uniform float invert;     // 1: the negative of the image
+        uniform float grey;       // 1: only how bright it is, for an eye of an anaglyph
         varying vec2 uv;
         void main()
         {
             vec3 c = texture2D (image, uv).rgb;
-            gl_FragColor = vec4 (mix (c, 1.0 - clamp (c, 0.0, 1.0), invert), 1.0);
+            c = mix (c, 1.0 - clamp (c, 0.0, 1.0), invert);
+            gl_FragColor = vec4 (mix (c, vec3 (max (c.r, max (c.g, c.b))), grey), 1.0);
         }
     )";
 
@@ -645,10 +651,12 @@ public:
     }
 
     // Brings accumTarget, currentTarget and blurTarget up to date.
-    void render (View, const scope::Camera& camera, int w, int h, float scale, double dtMs);
+    // The picture is w x h; pixelW is how many pixels across it is drawn with.
+    void render (View, const scope::Camera& camera, int w, int h, int pixelW, float scale, double dtMs);
 
     ScopeComponent& owner;
     const scope::CurveFeed& feed;
+    int eye = 0;                                     // which eye's picture this keeps (stereo)
     bool seen = true;                                // still asked for this frame
     Look look {};                                    // what the last render used
     std::shared_ptr<const scope::Frame> frame;       // and the frame it drew, if there is one yet
@@ -978,7 +986,10 @@ bool ScopeComponent::usePanel (const PanelPlacement& p, const scope::Mat3& plane
     if (p.scissor.isEmpty())
         return false;
 
-    glScissor (p.scissor.getX(), p.scissor.getY(), p.scissor.getWidth(), p.scissor.getHeight());
+    // The placement is in the picture's pixels; a squeezed eye has fewer across.
+    const int left = (int) std::floor ((float) p.scissor.getX() * squeeze);
+    const int right = (int) std::ceil ((float) p.scissor.getRight() * squeeze);
+    glScissor (left, p.scissor.getY(), right - left, p.scissor.getHeight());
     setLineTransform (p.scaleX, p.scaleY, p.offsetX, p.offsetY);
     lineShader->setUniformMat3 ("orient", planeToView.m, 1, GL_FALSE);
     lineShader->setUniform ("shift", shift.x, shift.y, shift.z);
@@ -1097,6 +1108,7 @@ void ScopeComponent::useLineShader (float alphaScale)
     lineShader->use();
     lineShader->setUniform ("alphaScale", alphaScale);
     lineShader->setUniform ("eye", scope::eyeDistance);
+    lineShader->setUniform ("eyeX", eyeX);
     lineShader->setUniform ("halfWidth", 0.0f);
     lineShader->setUniformMat3 ("orient", scope::Mat3().m, 1, GL_FALSE);
     lineShader->setUniform ("shift", 0.0f, 0.0f, 0.0f);
@@ -1109,7 +1121,7 @@ void ScopeComponent::setLineTransform (float scaleX, float scaleY, float offsetX
 }
 
 //==============================================================================
-void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& camera, int w, int h, float scale, double dtMs)
+void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& camera, int w, int h, int pixelW, float scale, double dtMs)
 {
     // Take the newest frame, and say this feed is being watched so one that
     // is made on demand gets its next. With no new one the last is drawn
@@ -1128,10 +1140,10 @@ void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& came
     const int margin = juce::roundToInt ((float) panelMargin * scale);
     const float halfWidth = lineHalfWidthFor (layout, view, w, h, margin, scale);
 
-    accumTarget.ensure (w, h);
-    currentTarget.ensure (w, h);
-    blurTempTarget.ensure (w / 2, h / 2);
-    blurTarget.ensure (w / 2, h / 2);
+    accumTarget.ensure (pixelW, h);
+    currentTarget.ensure (pixelW, h);
+    blurTempTarget.ensure (pixelW / 2, h / 2);
+    blurTarget.ensure (pixelW / 2, h / 2);
 
     // 1. Afterglow decays (dst *= keep); the live-beam buffer starts empty.
     accumTarget.bind();
@@ -1158,7 +1170,7 @@ void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& came
         if (look.fieldVolume && owner.volumeShader != nullptr && ! frame->spectrum)
         {
             // The volume once, at half size, then that onto both buffers.
-            volumeTarget.ensure (w / 2, h / 2);
+            volumeTarget.ensure (pixelW / 2, h / 2);
             volumeTarget.bind();
             glDisable (GL_BLEND);
             drawVolume (placement, camera);
@@ -1168,6 +1180,7 @@ void ScopeComponent::LayerRenderer::render (View view, const scope::Camera& came
             owner.copyShader->use();
             owner.copyShader->setUniform ("image", (GLint) 0);
             owner.copyShader->setUniform ("invert", 0.0f);
+            owner.copyShader->setUniform ("grey", 0.0f);
             for (auto* target : { &accumTarget, &currentTarget })
             {
                 target->bind();
@@ -1315,6 +1328,7 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     glUniform1fv (glGetUniformLocation (program, "curve"), scope::fieldCurvePoints, frame->curve);
     glUniform1fv (glGetUniformLocation (program, "show"), scope::fieldCurvePoints, frame->show);
     shader.setUniform ("eye", scope::eyeDistance);
+    shader.setUniform ("eyeX", owner.eyeX);
     shader.setUniform ("waves", (GLint) 0);
     bindTexture (0, fieldTexture);
 }
@@ -1382,7 +1396,7 @@ void ScopeComponent::LayerRenderer::drawVolume (const PanelPlacement& p, const s
         for (int row = 0; row < 3; ++row)
             back.m[col * 3 + row] = camera.turn.m[row * 3 + col];
 
-    const auto eyeAt = back * scope::Vec3 { -camera.shift.x, -camera.shift.y, scope::eyeDistance - camera.shift.z };
+    const auto eyeAt = back * scope::Vec3 { owner.eyeX - camera.shift.x, -camera.shift.y, scope::eyeDistance - camera.shift.z };
     const float eyeOut = std::sqrt (eyeAt.x * eyeAt.x + eyeAt.y * eyeAt.y + eyeAt.z * eyeAt.z);
     endless = endless || bound > eyeOut - 0.5f;
     shader.setUniform ("bound", juce::jmax (0.01f, juce::jmin (bound, eyeOut - 0.5f)));
@@ -1423,24 +1437,9 @@ void ScopeComponent::renderOpenGL()
     }
 
     // Each layer keeps its renderer for as long as it is asked for, so its
-    // afterglow carries on from frame to frame.
+    // afterglow carries on from frame to frame. In stereo each eye has one.
     for (auto& layer : layers)
         layer->seen = false;
-
-    LayerRenderer* drawn[maxLayers] {};
-    for (int i = 0; i < count; ++i)
-    {
-        auto found = std::find_if (layers.begin(), layers.end(),
-                                   [&] (const auto& layer) { return &layer->feed == list[(size_t) i].feed && ! layer->seen; });
-        if (found == layers.end())
-        {
-            layers.push_back (std::make_unique<LayerRenderer> (*this, *list[(size_t) i].feed));
-            found = layers.end() - 1;
-        }
-        (*found)->seen = true;
-        drawn[i] = found->get();
-    }
-    layers.erase (std::remove_if (layers.begin(), layers.end(), [] (const auto& layer) { return ! layer->seen; }), layers.end());
 
     const double now = juce::Time::getMillisecondCounterHiRes();
     const double dt = lastFrameMs > 0.0 ? juce::jlimit (1.0, 100.0, now - lastFrameMs) : 16.0;
@@ -1462,109 +1461,177 @@ void ScopeComponent::renderOpenGL()
     if (const auto from = (scope::Perspective) perspective.load(); from != scope::Perspective::front)
         camera = camera.turnedBy (scope::perspectiveTurn (from));
 
-    for (int i = 0; i < count; ++i)
-        drawn[i]->render (list[(size_t) i].view, camera, w, h, scale, dt);
+    // One picture, or one for each eye (see Plane.h): where on the screen an
+    // eye's picture goes, what shape it has (w across) and how many pixels
+    // it gets across.
+    struct EyeView { float x; int left, w, pixelW; };
+    const auto mode = (scope::Stereo) stereo.load();
+    const float apart = scope::eyeSeparation * 0.01f * (float) stereoDepth.load();
+    const int half = w / 2;
+    EyeView eyes[2] { { 0.0f, 0, w, w }, {} };
+    int numEyes = 1;
+    int shown = -1;                                  // Wiggle: the only eye that reaches the screen this frame
 
-    // The canvas starts as the background with the guides, which are not
-    // affected by any image control. A frame says which of its planes want
-    // guides; every plane gets them once, from the lowest layer on it. With
-    // nothing to draw yet, the default picture's.
-    struct Guides { Layout layout; View view; scope::Mat3 planeToView; float correlation; scope::Vec3 shift; };
-    Guides guides[maxLayers * scope::maxGuidePlanes];
-    int numGuides = 0;
-    bool anyFrame = false;
-    for (int i = 0; i < count; ++i)
+    switch (mode)
     {
-        const auto* frame = drawn[i]->frame.get();
-        if (frame == nullptr)
-            continue;
-        anyFrame = true;
-
-        for (int k = 0; k < frame->numGuides; ++k)
-        {
-            const auto planeToView = camera.turn * frame->guides[k];
-            const auto shift = camera.toView (frame->guidesAt[k]);
-            if (std::none_of (guides, guides + numGuides, [&] (const Guides& g) { return g.planeToView.isNear (planeToView) && g.shift.isNear (shift); }))
-                guides[numGuides++] = { frame->layout, list[(size_t) i].view, planeToView, frame->correlation, shift };
-        }
-    }
-    if (! anyFrame)
-        guides[numGuides++] = { Layout::sideBySide, View(), camera.turn, 1.0f, camera.shift };
-
-    // The labels only fit a single flat picture.
-    const auto* bottom = count > 0 ? drawn[0]->frame.get() : nullptr;
-    drawnLayout.store (camera.atRest() && (bottom == nullptr || bottom->flat)
-                           ? (int) (bottom != nullptr ? bottom->layout : Layout::sideBySide) : -1);
-
-    canvas[0].ensure (w, h);
-    canvas[1].ensure (w, h);
-    canvas[0].bind();
-    glClearColor (backgroundColour.getFloatRed(), backgroundColour.getFloatGreen(), backgroundColour.getFloatBlue(), 1.0f);
-    glClear (GL_COLOR_BUFFER_BIT);
-
-    glBlendFunc (GL_SRC_ALPHA, GL_ONE);
-    useLineShader (1.0f);
-    glEnable (GL_SCISSOR_TEST);
-    for (int i = 0; i < numGuides; ++i)
-    {
-        const auto& g = guides[i];
-        const int margin = juce::roundToInt ((float) panelMargin * scale);
-        const float halfWidth = lineHalfWidthFor (g.layout, g.view, w, h, margin, scale);
-        const bool flat = g.planeToView.isIdentity() && g.shift.isZero();
-
-        for (int panel = 0; panel < numPanels (g.layout); ++panel)
-        {
-            if (! usePanel (placePanel (g.layout, panel, w, h, margin, g.view, flat), g.planeToView, halfWidth, g.shift))
-                continue;
-
-            vertices.clear();
-            if (g.layout == Layout::midSide)
-                addGoniometerGuides (g.correlation);
-            else
-                addTrajectoryGuides();
-            drawVertices (vertices, linePosition, lineColour);
-        }
-    }
-    glDisable (GL_SCISSOR_TEST);
-
-    // Each layer in turn is combined with the canvas so far into the other
-    // canvas buffer: a blend mode has to read what is under it.
-    glDisable (GL_BLEND);
-    blendShader->use();
-    blendShader->setUniform ("below", (GLint) 0);
-    blendShader->setUniform ("accumulation", (GLint) 1);
-    blendShader->setUniform ("current", (GLint) 2);
-    blendShader->setUniform ("halo", (GLint) 3);
-
-    int top = 0;
-    for (int i = 0; i < count; ++i)
-    {
-        const auto& layer = *drawn[i];
-        canvas[1 - top].bind();
-        bindTexture (0, canvas[top].texture);
-        bindTexture (1, layer.accumTarget.texture);
-        bindTexture (2, layer.currentTarget.texture);
-        bindTexture (3, layer.blurTarget.texture);
-        blendShader->setUniform ("exposure", baseExposure * layer.look.brightness);
-        blendShader->setUniform ("contrast", layer.look.contrast);
-        blendShader->setUniform ("haloGain", layer.blurRadius > 0 ? haloGain : 0.0f);
-        blendShader->setUniform ("mode", (GLint) layer.look.blend);
-        drawFullScreen (*blendShader);
-        top = 1 - top;
+        case scope::Stereo::wiggle:
+            // Both are drawn every frame, so each one's afterglow carries on.
+            eyes[0] = { -0.5f * apart, 0, w, w };
+            eyes[1] = { 0.5f * apart, 0, w, w };
+            numEyes = 2;
+            shown = (int) ((juce::Time::currentTimeMillis() * stereoRate.load() / 1000) % 2);
+            break;
+        case scope::Stereo::anaglyph:   eyes[0] = { -0.5f * apart, 0, w, w };        eyes[1] = { 0.5f * apart, 0, w, w };               numEyes = 2; break;
+        case scope::Stereo::leftEye:    eyes[0].x = -0.5f * apart; break;
+        case scope::Stereo::rightEye:   eyes[0].x = 0.5f * apart; break;
+        case scope::Stereo::sideBySide: eyes[0] = { -0.5f * apart, 0, half, half };  eyes[1] = { 0.5f * apart, w - half, half, half };  numEyes = 2; break;
+        case scope::Stereo::crossed:    eyes[0] = { 0.5f * apart, 0, half, half };   eyes[1] = { -0.5f * apart, w - half, half, half }; numEyes = 2; break;
+        case scope::Stereo::squeezed:   eyes[0] = { -0.5f * apart, 0, w, half };     eyes[1] = { 0.5f * apart, w - half, w, half };     numEyes = 2; break;
+        case scope::Stereo::off:        break;
     }
 
-    glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) screenFbo);
-    glViewport (0, 0, w, h);
-    // The whole picture as its negative, if any layer asks for it.
+    if (half < 1)
+        numEyes = 1;
+
     bool inverted = false;
-    for (int i = 0; i < count; ++i)
-        inverted = inverted || drawn[i]->look.invert;
+    for (int e = 0; e < numEyes; ++e)
+    {
+        const auto& see = eyes[e];
+        eyeX = see.x;
+        squeeze = (float) see.pixelW / (float) see.w;
+        glEnable (GL_BLEND);
 
-    copyShader->use();
-    copyShader->setUniform ("image", (GLint) 0);
-    copyShader->setUniform ("invert", inverted ? 1.0f : 0.0f);
-    bindTexture (0, canvas[top].texture);
-    drawFullScreen (*copyShader);
+        LayerRenderer* drawn[maxLayers] {};
+        for (int i = 0; i < count; ++i)
+        {
+            auto found = std::find_if (layers.begin(), layers.end(),
+                                       [&] (const auto& layer) { return &layer->feed == list[(size_t) i].feed && layer->eye == e && ! layer->seen; });
+            if (found == layers.end())
+            {
+                layers.push_back (std::make_unique<LayerRenderer> (*this, *list[(size_t) i].feed));
+                found = layers.end() - 1;
+                (*found)->eye = e;
+            }
+            (*found)->seen = true;
+            drawn[i] = found->get();
+        }
+
+        for (int i = 0; i < count; ++i)
+            drawn[i]->render (list[(size_t) i].view, camera, see.w, h, see.pixelW, scale, dt);
+
+        // The canvas starts as the background with the guides, which are not
+        // affected by any image control. A frame says which of its planes want
+        // guides; every plane gets them once, from the lowest layer on it. With
+        // nothing to draw yet, the default picture's.
+        struct Guides { Layout layout; View view; scope::Mat3 planeToView; float correlation; scope::Vec3 shift; };
+        Guides guides[maxLayers * scope::maxGuidePlanes];
+        int numGuides = 0;
+        bool anyFrame = false;
+        for (int i = 0; i < count; ++i)
+        {
+            const auto* frame = drawn[i]->frame.get();
+            if (frame == nullptr)
+                continue;
+            anyFrame = true;
+
+            for (int k = 0; k < frame->numGuides; ++k)
+            {
+                const auto planeToView = camera.turn * frame->guides[k];
+                const auto shift = camera.toView (frame->guidesAt[k]);
+                if (std::none_of (guides, guides + numGuides, [&] (const Guides& g) { return g.planeToView.isNear (planeToView) && g.shift.isNear (shift); }))
+                    guides[numGuides++] = { frame->layout, list[(size_t) i].view, planeToView, frame->correlation, shift };
+            }
+        }
+        if (! anyFrame)
+            guides[numGuides++] = { Layout::sideBySide, View(), camera.turn, 1.0f, camera.shift };
+
+        // The labels only fit a single flat picture.
+        const auto* bottom = count > 0 ? drawn[0]->frame.get() : nullptr;
+        drawnLayout.store (numEyes == 1 && camera.atRest() && (bottom == nullptr || bottom->flat)
+                               ? (int) (bottom != nullptr ? bottom->layout : Layout::sideBySide) : -1);
+
+        canvas[0].ensure (see.pixelW, h);
+        canvas[1].ensure (see.pixelW, h);
+        canvas[0].bind();
+        glClearColor (backgroundColour.getFloatRed(), backgroundColour.getFloatGreen(), backgroundColour.getFloatBlue(), 1.0f);
+        glClear (GL_COLOR_BUFFER_BIT);
+
+        glBlendFunc (GL_SRC_ALPHA, GL_ONE);
+        useLineShader (1.0f);
+        glEnable (GL_SCISSOR_TEST);
+        for (int i = 0; i < numGuides; ++i)
+        {
+            const auto& g = guides[i];
+            const int margin = juce::roundToInt ((float) panelMargin * scale);
+            const float halfWidth = lineHalfWidthFor (g.layout, g.view, see.w, h, margin, scale);
+            const bool flat = g.planeToView.isIdentity() && g.shift.isZero();
+
+            for (int panel = 0; panel < numPanels (g.layout); ++panel)
+            {
+                if (! usePanel (placePanel (g.layout, panel, see.w, h, margin, g.view, flat), g.planeToView, halfWidth, g.shift))
+                    continue;
+
+                vertices.clear();
+                if (g.layout == Layout::midSide)
+                    addGoniometerGuides (g.correlation);
+                else
+                    addTrajectoryGuides();
+                drawVertices (vertices, linePosition, lineColour);
+            }
+        }
+        glDisable (GL_SCISSOR_TEST);
+
+        // Each layer in turn is combined with the canvas so far into the other
+        // canvas buffer: a blend mode has to read what is under it.
+        glDisable (GL_BLEND);
+        blendShader->use();
+        blendShader->setUniform ("below", (GLint) 0);
+        blendShader->setUniform ("accumulation", (GLint) 1);
+        blendShader->setUniform ("current", (GLint) 2);
+        blendShader->setUniform ("halo", (GLint) 3);
+
+        int top = 0;
+        for (int i = 0; i < count; ++i)
+        {
+            const auto& layer = *drawn[i];
+            canvas[1 - top].bind();
+            bindTexture (0, canvas[top].texture);
+            bindTexture (1, layer.accumTarget.texture);
+            bindTexture (2, layer.currentTarget.texture);
+            bindTexture (3, layer.blurTarget.texture);
+            blendShader->setUniform ("exposure", baseExposure * layer.look.brightness);
+            blendShader->setUniform ("contrast", layer.look.contrast);
+            blendShader->setUniform ("haloGain", layer.blurRadius > 0 ? haloGain : 0.0f);
+            blendShader->setUniform ("mode", (GLint) layer.look.blend);
+            drawFullScreen (*blendShader);
+            top = 1 - top;
+        }
+
+        glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) screenFbo);
+        glViewport (see.left, 0, see.pixelW, h);
+        // The whole picture as its negative, if any layer asks for it.
+        for (int i = 0; i < count; ++i)
+            inverted = inverted || drawn[i]->look.invert;
+
+        copyShader->use();
+        copyShader->setUniform ("image", (GLint) 0);
+        copyShader->setUniform ("invert", inverted ? 1.0f : 0.0f);
+        copyShader->setUniform ("grey", mode == scope::Stereo::anaglyph ? 1.0f : 0.0f);
+        bindTexture (0, canvas[top].texture);
+
+        // An anaglyph's eyes share the screen: the left has its red, the
+        // right its green and blue.
+        if (mode == scope::Stereo::anaglyph && numEyes == 2)
+            glColorMask (e == 0, e == 1, e == 1, GL_TRUE);
+        if (shown < 0 || shown == e || numEyes == 1)
+            drawFullScreen (*copyShader);
+        glColorMask (GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    }
+
+    eyeX = 0.0f;
+    squeeze = 1.0f;
+    layers.erase (std::remove_if (layers.begin(), layers.end(), [] (const auto& layer) { return ! layer->seen; }), layers.end());
 
     for (int unit = 3; unit >= 0; --unit)
         bindTexture (unit, 0);

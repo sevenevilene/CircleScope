@@ -274,6 +274,10 @@ void CircleScopeProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("colourScale", scope::SceneColours::get().read().toString(), nullptr);
     state.setProperty ("colourScaleChanged", juce::String (scope::SceneColours::get().getStamp()), nullptr);
 
+    state.setProperty ("stereo", stereoMode.load(), nullptr);
+    state.setProperty ("stereoDepth", stereoDepth.load(), nullptr);
+    state.setProperty ("stereoRate", stereoRate.load(), nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -305,6 +309,10 @@ void CircleScopeProcessor::setStateInformation (const void* data, int sizeInByte
 
             if (scope::ColourScale scale; scale.fromString (apvts.state["colourScale"].toString()))
                 scope::SceneColours::get().offer (scale, apvts.state["colourScaleChanged"].toString().getLargeIntValue());
+
+            stereoMode.store (juce::jlimit (0, scope::numStereoModes - 1, (int) apvts.state.getProperty ("stereo", 0)));
+            stereoDepth.store (juce::jlimit (0, scope::maxStereoDepth, (int) apvts.state.getProperty ("stereoDepth", 100)));
+            stereoRate.store (juce::jlimit (1, scope::maxWiggleRate, (int) apvts.state.getProperty ("stereoRate", scope::wiggleRate)));
 
             if (const auto saved = apvts.state["instanceId"].toString(); saved.isNotEmpty())
                 if (InstanceRegistry::get().changeId (&source, juce::Uuid (saved)))

@@ -190,6 +190,39 @@ of its own in the same space:
   flight can be recorded as automation. **Reset** on the pad (or a
   double-click on it) puts the view back: straight on, at the centre, with
   no roll.
+  **View** on the pad looks at the scene from a side: Front, Back, Top,
+  Bottom, Left or Right, the same sides a wall cell or a node output can
+  show. It sets View yaw and pitch and takes the roll off, and leaves the
+  point the camera looks at where it is.
+- **Stereo**, in the same View menu, draws the scene for two eyes on this
+  instance's own scopes (the editor's and the full screen one, where `E`
+  steps through it). The two eyes look through the same window, the flat
+  picture's plane: what lies there sits on the screen, what is nearer
+  comes out of it and what is further lies behind. So it shows on scenes
+  with depth: a turned view, planes in space, a field as a volume.
+  - **Red / cyan**: both eyes in one picture, for red and cyan glasses: the
+    left eye's in red, the right eye's in cyan. What is on the screen's
+    plane stays white, and the rest splits into a red and a cyan picture,
+    further apart the further it is from there. The scene's own colours are
+    given up for it: each eye's picture is only how bright it is.
+  - **Wiggle**: one picture that goes back and forth between the two eyes'
+    some times a second (**Wiggle rate**, 8 to start with). The jump reads
+    as depth with no glasses, on any screen, and the colours stay. What is
+    on the screen's plane keeps still. It costs a shimmer, and both eyes are
+    drawn every frame so each keeps its own afterglow.
+  - **Left eye / Right eye**: one eye's picture, for a pair of projectors.
+  - **Side by side**: both, each half a picture of its own, left eye on the
+    left. For a viewer, or two projectors on one wide output.
+  - **Cross-eyed**: the same with the eyes changed over, to look at with
+    crossed eyes on any screen.
+  - **3D TV**: both in one picture's shape, each squeezed to half its width,
+    which is what a 3D TV or projector takes as "side by side".
+  - **Depth** is how far apart the eyes are: 100% is as a viewer's are, at
+    a distance of twice the picture's width.
+
+  It belongs to the screen, not to the scene, so it is saved with the
+  instance but is not a host parameter and is not sent to the network: a
+  wall's cell and a node's output have their own.
 
 **Sum with...** adds other CircleScope instances in the same session to
 this instance's drawing: the button lists them by track name, tick the ones
@@ -273,6 +306,10 @@ window into a grid, one scope per cell.
   from several sides at once. The view comes on top of the instance's
   camera, so turning or moving the camera turns all of them together. A
   flat picture is edge-on from the sides, so this is for scenes with depth.
+- And each cell has a **stereo** setting (`E` steps through it): Mono, red and
+  cyan, wiggle, one eye's picture, or both side by side, as in the plugin. Two cells on one
+  stream, one Left eye and one Right eye, are a stereo pair. **Depth** and
+  the wiggle rate are for the whole wall.
 
 ### Layers
 
@@ -329,6 +366,8 @@ Three programs work together on one network:
   in a grid. Select a tile to set its stream and its place in a video wall
   (wall size in screens, this screen's column and row, how many it spans),
   and its view: the side it shows the scene from, as for a cell of the wall.
+  And its stereo setting, depth and wiggle rate: two outputs on one stream, one Left eye
+  and one Right eye, feed a pair of projectors.
   A wall of 4 x 3 screens on one stream draws one picture across all twelve.
 
 Nodes announce themselves by UDP broadcast (port 47800), so nothing needs an

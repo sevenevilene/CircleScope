@@ -22,11 +22,14 @@ namespace
 //==============================================================================
 // What one output (window) shows: a stream, and which cell of a wall of
 // cols x rows equal screens this output covers. A 1x1 wall is the whole picture.
-// And the side it shows the stream's scene from (scope::Perspective).
+// And the side it shows the stream's scene from (scope::Perspective), and
+// the eye, or eyes, it shows it for (scope::Stereo) with how deep, in percent,
+// and how often Wiggle changes eye, a second.
 struct OutputConfig
 {
     int stream = 1, cols = 1, rows = 1, col = 0, row = 0, spanW = 1, spanH = 1;
     int perspective = 0;
+    int stereo = 0, depth = 100, rate = scope::wiggleRate;
 
     void sanitise()
     {
@@ -38,6 +41,9 @@ struct OutputConfig
         spanW = juce::jlimit (1, cols - col, spanW);
         spanH = juce::jlimit (1, rows - row, spanH);
         perspective = juce::jlimit (0, scope::numPerspectives - 1, perspective);
+        stereo = juce::jlimit (0, scope::numStereoModes - 1, stereo);
+        depth = juce::jlimit (0, scope::maxStereoDepth, depth);
+        rate = juce::jlimit (1, scope::maxWiggleRate, rate);
     }
 
     ScopeComponent::View view() const
@@ -57,6 +63,9 @@ struct OutputConfig
         o->setProperty ("spanw", spanW);
         o->setProperty ("spanh", spanH);
         o->setProperty ("perspective", perspective);
+        o->setProperty ("stereo", stereo);
+        o->setProperty ("depth", depth);
+        o->setProperty ("rate", rate);
         return o;
     }
 
@@ -72,6 +81,9 @@ struct OutputConfig
         take ("spanw", spanW);
         take ("spanh", spanH);
         take ("perspective", perspective);
+        take ("stereo", stereo);
+        take ("depth", depth);
+        take ("rate", rate);
         sanitise();
     }
 };
@@ -421,6 +433,7 @@ private:
     void showConfig (Output& output)
     {
         output.window->scope.setPerspective ((scope::Perspective) output.config.perspective);
+        output.window->scope.setStereo ((scope::Stereo) output.config.stereo, output.config.depth, output.config.rate);
         output.window->scope.setLayerProvider ([this, stream = output.config.stream, view = output.config.view()] (ScopeComponent::LayerList& list)
         {
             StreamReceiver::LayerList heard;
