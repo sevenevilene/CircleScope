@@ -44,6 +44,15 @@
 // of field, like a camera lens: what is at the depth of Field focus is
 // sharp, and the rest blurs the more the further it is from there.
 //
+// Field polarity is what the instance's wave is multiplied by before it
+// goes into the field: 1 as it is, -1 turned over, 0 none of it. Field
+// interfere says how the fields of summed instances meet: off, each is
+// coloured by itself and they are added as light; on, their waves are added
+// first, so they can cancel, and the sum is coloured. Field saturation is
+// how pure the field's colours are: at 0 a band goes from its colour to the
+// opposite one through grey as its wave swings, at 100 it is the one or the
+// other and only darker where the wave is weak.
+//
 // Alpha is the alpha of the colours, in every mode: for curves and the
 // field on its planes how much of their light is added, in the field's
 // volume how much a point hides what is behind it.
@@ -59,7 +68,7 @@ namespace scope
         pBlend, pLayer, pDivide, pSwingMotion, pSwingRate, pSwingSync,
         pPlane, pPlaneRotX, pPlaneRotY, pPlaneRotZ, pViewYaw, pViewPitch, pViewRoll,
         pPosX, pPosY, pPosZ, pFieldFade, pFieldLock, pFieldSpeed, pFieldVolume, pFieldDensity, pFieldShape, pFieldEq, pFieldEqWidth, pFieldFocus, pFieldAperture,
-        pCamX, pCamY, pCamZ, pAlpha,
+        pCamX, pCamY, pCamZ, pAlpha, pFieldPolarity, pFieldInterfere, pFieldSaturation,
         numParams
     };
 
@@ -140,5 +149,8 @@ namespace scope
         { "camy",       "Camera Y",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
         { "camz",       "Camera Z",   ParamKind::real,  -20.0f,  20.0f,   0.001f, 1.0f, 0.0f,     "",   "",                                -1 },
         { "alpha",      "Alpha",      ParamKind::real,    0.0f, 100.0f,   0.1f,  1.0f,  100.0f,   "%",  "",                                -1 },
+        { "fieldpolarity", "Field polarity", ParamKind::real, -1.0f, 1.0f, 0.01f, 1.0f,  1.0f,     "",   "",                                -1 },
+        { "fieldinterfere", "Field interfere", ParamKind::toggle, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,    "",   "",                                -1 },
+        { "fieldsaturation", "Field saturation", ParamKind::real, 0.0f, 100.0f, 0.1f, 1.0f, 0.0f,  "%",  "",                                -1 },
     };
 }

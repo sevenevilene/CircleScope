@@ -56,7 +56,8 @@ CurveAnalyser::Settings CurveAnalyser::readSettings (const ScopeSource& src)
              get (pFieldSpeed) * 0.01f,
              get (pFieldShape) > 0.5f,
              get (pFieldEq) > 0.5f,
-             get (pFieldEqWidth) };
+             get (pFieldEqWidth),
+             juce::jlimit (-1.0f, 1.0f, get (pFieldPolarity)) };
 }
 
 //==============================================================================
@@ -457,9 +458,12 @@ void CurveAnalyser::addField (scope::Frame& frame, const Range& r)
             }
 
             const bool heard = bandPeak > 1.0e-4f;
-            out.level[band] = heard ? juce::jmin (bandPeak, 4.0f) : 0.0f;
+            // The instance's polarity: its size goes with the level, and
+            // a negative one turns the wave over.
+            const float turned = set.fieldPolarity < 0.0f ? -1.0f : 1.0f;
+            out.level[band] = heard ? juce::jmin (bandPeak, 4.0f) * std::abs (set.fieldPolarity) : 0.0f;
             for (int j = 0; j < scope::fieldSamples; ++j)
-                to[j] = heard ? to[j] / bandPeak : 0.0f;
+                to[j] = heard ? turned * to[j] / bandPeak : 0.0f;
         }
     }
 }

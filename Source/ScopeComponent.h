@@ -99,6 +99,8 @@ private:
         float fieldFocus;          // the depth that is sharp, towards the viewer from the centre of the scene
         float fieldAperture;       // 0..1: how much the rest blurs; 0 is everything sharp
         float alpha;               // 0..1: the alpha of the colours, in every mode
+        bool fieldInterfere;       // the sources' waves are added before they are coloured
+        float fieldPure;           // 0..1: how pure the field's colours are
     };
 
     // Where one panel lands in this component's framebuffer: a transform from

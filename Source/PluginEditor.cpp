@@ -17,8 +17,8 @@ CircleScopeEditor::CircleScopeEditor (CircleScopeProcessor& p)
     scope.onDoubleClick = [this] { toggleFullScreen(); };
 
     setResizable (true, true);
-    setResizeLimits (800, 800, 2400, 1500);
-    setSize (980, 1010);
+    setResizeLimits (800, 830, 2400, 1500);
+    setSize (980, 1040);
 
     startTimerHz (5);
     timerCallback();

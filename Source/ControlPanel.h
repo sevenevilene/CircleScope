@@ -144,7 +144,7 @@ public:
 
         for (juce::Component* c : std::initializer_list<juce::Component*> { &modeBox, &colourBox, &layoutBox, &guidesButton, &testButton,
                                                                             &swingLabel, &swingMotionBox, &swingSyncButton,
-                                                                            &planeLabel, &planeBox, &sumButton, &fieldLockButton, &fieldVolumeButton, &fieldShapeBox, &fieldEqButton, &fieldCurve, &fadeCurve, &showCurve, &coloursLabel, &colourScale,
+                                                                            &planeLabel, &planeBox, &sumButton, &fieldLockButton, &fieldVolumeButton, &fieldInterfereButton, &fieldShapeBox, &fieldEqButton, &fieldCurve, &fadeCurve, &showCurve, &coloursLabel, &colourScale,
                                                                             &blendLabel, &blendBox, &layerLabel, &layerBox,
                                                                             &streamLabel, &divideButton, &streamStatus })
             addAndMakeVisible (c);
@@ -189,6 +189,12 @@ public:
         alpha.slider.setTooltip ("The alpha of the colours, in every mode. For curves and the field on its planes it is how much of their light is added; in the field as a volume it is how much a dot hides what is behind it, without making it dimmer");
         fieldShapeBox.addItemList (juce::StringArray::fromTokens (scope::paramTable[scope::pFieldShape].choices, "|", ""), 1);
         fieldShapeBox.setTooltip ("Field mode: Dots stand still and pulse, large for low notes and fine for high ones. Rings spread out from this instance's position, like ripples");
+        setUp (fieldPolarity, "fieldpolarity", "Polarity", "");
+        setUp (fieldSaturation, "fieldsaturation", "Saturation", " %");
+        fieldPolarity.slider.setTooltip ("Field mode: what this instance's wave is multiplied by before it goes into the field. 1 is as it is, -1 turned over, 0 none of it. With Interfere on and two instances at the same place, 1 and 1 shows what is left of them in mono, 1 and -1 only where they differ");
+        fieldPolarity.slider.setDoubleClickReturnValue (true, 1.0);
+        fieldSaturation.slider.setTooltip ("Field mode: how pure the colours are. At 0 a colour goes over to its opposite through grey as the wave swings; at 100 it is the one or the other, and the gaps between are dark");
+        fieldInterfereButton.setTooltip ("Field mode, with Sum with: add the instances' waves before they are coloured, so they strengthen each other or cancel. Off, each instance is coloured by itself and they are added as light");
         setUp (fieldFocus, "fieldfocus", "Focus", "");
         setUp (fieldAperture, "fieldaperture", "Aperture", " %");
         fieldFocus.slider.setTooltip ("Field mode, as a volume: the depth that is sharp when Aperture is open. 0 is the centre of the scene, positive is nearer to you, negative further away");
@@ -223,6 +229,7 @@ public:
         swingSyncAttachment = std::make_unique<ButtonAttachment> (apvts, "swingsync", swingSyncButton);
         fieldLockAttachment = std::make_unique<ButtonAttachment> (apvts, "fieldlock", fieldLockButton);
         fieldVolumeAttachment = std::make_unique<ButtonAttachment> (apvts, "fieldvolume", fieldVolumeButton);
+        fieldInterfereAttachment = std::make_unique<ButtonAttachment> (apvts, "fieldinterfere", fieldInterfereButton);
         fieldShapeAttachment = std::make_unique<ComboAttachment> (apvts, "fieldshape", fieldShapeBox);
         fieldEqAttachment = std::make_unique<ButtonAttachment> (apvts, "fieldeq", fieldEqButton);
         blendAttachment = std::make_unique<ComboAttachment> (apvts, "blend", blendBox);
@@ -248,7 +255,7 @@ public:
 
     int getPreferredHeight() const
     {
-        return 12 + rowHeight * (9 + (showsSwing ? 1 : 0) + (showsField ? 4 : 0)) + (showsField ? 2 * curveHeight : 0) + (showsCurve ? curveHeight : 0);
+        return 12 + rowHeight * (9 + (showsSwing ? 1 : 0) + (showsField ? 5 : 0)) + (showsField ? 2 * curveHeight : 0) + (showsCurve ? curveHeight : 0);
     }
 
     std::function<void()> onHeightChanged;
@@ -377,6 +384,11 @@ public:
 
             placeRow (nextRow(), { &fieldFocus, &fieldAperture });
 
+            // How the instance's wave goes in, and how the instances' meet.
+            auto meetRow = nextRow();
+            placeRow (meetRow, { &fieldPolarity, &fieldSaturation });
+            fieldInterfereButton.setBounds (thirdOf (meetRow, 2).removeFromLeft (150).reduced (4, 0));
+
             // Then the Field EQ, and its curve.
             auto eqRow = nextRow();
             fieldEqButton.setBounds (thirdOf (eqRow, 0).reduced (4, 0));
@@ -439,6 +451,7 @@ private:
         show (field, { &fieldFade.label, &fieldFade.slider, &fieldSpeed.label, &fieldSpeed.slider, &fieldLockButton,
                        &fieldShapeBox, &fieldVolumeButton, &fieldDensity.label, &fieldDensity.slider,
                        &fieldFocus.label, &fieldFocus.slider, &fieldAperture.label, &fieldAperture.slider,
+                       &fieldPolarity.label, &fieldPolarity.slider, &fieldSaturation.label, &fieldSaturation.slider, &fieldInterfereButton,
                        &fieldEqButton, &fieldEqWidth.label, &fieldEqWidth.slider });
         show (curve, { &fieldCurve });
         show (field, { &fadeCurve, &showCurve });
@@ -514,7 +527,7 @@ private:
 
     juce::ComboBox modeBox, colourBox, layoutBox, blendBox, layerBox, swingMotionBox, planeBox, fieldShapeBox;
     juce::ToggleButton guidesButton { "Guides" }, testButton { "Test tone" }, divideButton { "Divide" },
-                       swingSyncButton { "Once per window" }, fieldLockButton { "Lock to wave" }, fieldVolumeButton { "Volume" }, fieldEqButton { "EQ by distance" };
+                       swingSyncButton { "Once per window" }, fieldLockButton { "Lock to wave" }, fieldVolumeButton { "Volume" }, fieldInterfereButton { "Interfere" }, fieldEqButton { "EQ by distance" };
     // An octave apart, 20 Hz at the bottom.
     FieldCurveEditor fieldCurve { processor.source.fieldCurve, juce::roundToInt ((float) scope::fieldBands * scope::fieldBandOctaves), "20 kHz", "20 Hz, at the centre", "far out" };
     FieldCurveEditor showCurve { processor.source.showCurve, 4, "Seen: fully", "not, where the wave is still", "where it swings most" };
@@ -526,10 +539,10 @@ private:
 
     LabelledSlider window, delay, afterglow, brightness, contrast, blur, lowCut, highCut, swingRate,
                    planeRotX, planeRotY, planeRotZ, viewYaw, viewPitch, viewRoll,
-                   posX, posY, posZ, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture, alpha;
+                   posX, posY, posZ, fieldFade, fieldSpeed, fieldDensity, fieldEqWidth, fieldFocus, fieldAperture, fieldPolarity, fieldSaturation, alpha;
 
     std::unique_ptr<ComboAttachment> modeAttachment, colourAttachment, layoutAttachment, blendAttachment, layerAttachment, swingMotionAttachment, planeAttachment, fieldShapeAttachment;
-    std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment, swingSyncAttachment, fieldLockAttachment, fieldVolumeAttachment, fieldEqAttachment;
+    std::unique_ptr<ButtonAttachment> guidesAttachment, testAttachment, divideAttachment, swingSyncAttachment, fieldLockAttachment, fieldVolumeAttachment, fieldInterfereAttachment, fieldEqAttachment;
     std::array<std::unique_ptr<ButtonAttachment>, net::maxStreams> streamAttachments;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ControlPanel)

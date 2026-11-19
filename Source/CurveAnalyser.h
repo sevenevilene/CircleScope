@@ -112,6 +112,7 @@ private:
         float fieldSpeed;          // of the locked picture, as a fraction of real time
         bool fieldRings;
         bool fieldEq;
+        float fieldPolarity;       // what the instance's wave is multiplied by, -1..1
         float fieldEqWidth;        // octaves
     };
 

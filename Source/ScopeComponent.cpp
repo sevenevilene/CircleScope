@@ -128,6 +128,11 @@ namespace
         uniform float bandLevel[64];  // how strong each band of each source is
         uniform float sourceFade[8];  // one over the distance at which each source's field ends
         uniform float fadeCurve[128]; // how strong each source's field is on the way there, at 16 distances
+        uniform int count;            // of sources
+        uniform vec3 sourceAt[8];
+        uniform mat3 sourceAxes[8];   // the scene to the source's own axes
+        uniform float interfere;      // 1: the sources' waves are added before they are coloured
+        uniform float pure;           // how pure the colours are, 0..1
 
         // How much of source k's field is left at a distance from it.
         float fadeAt (int k, float away)
@@ -172,20 +177,23 @@ namespace
         vec4 tint (vec4 c, float x)
         {
             vec3 opposite = vec3 (max (c.r, max (c.g, c.b)) + min (c.r, min (c.g, c.b))) - c.rgb;
-            return vec4 (mix (opposite, c.rgb, 0.5 + 0.5 * clamp (x, -1.0, 1.0)), c.a);
+            // The purer, the sooner it is all the one colour or the other.
+            return vec4 (mix (opposite, c.rgb, clamp (0.5 + 0.5 * x / (1.0 - 0.97 * pure), 0.0, 1.0)), c.a);
+        }
+
+        // The pitch the EQ's curve gives for a point, in bands.
+        float pitchAt (vec3 q)
+        {
+            float along = clamp (length (q) / 2.0, 0.0, 1.0) * 15.0;
+            int i = int (min (floor (along), 14.0));
+            return mix (curve[i], curve[i + 1], along - float (i)) * 8.0;
         }
 
         // The field of source k at a point, given in the source's own axes:
         // its amplitude, and its colour there.
         float field (vec3 q, int k, out vec4 colour)
         {
-            float pitch = 0.0;
-            if (eq > 0.5)
-            {
-                float along = clamp (length (q) / 2.0, 0.0, 1.0) * 15.0;
-                int i = int (min (floor (along), 14.0));
-                pitch = mix (curve[i], curve[i + 1], along - float (i)) * 8.0;
-            }
+            float pitch = eq > 0.5 ? pitchAt (q) : 0.0;
 
             float a = 0.0, weight = 0.0;
             vec4 sum = vec4 (0.0);
@@ -210,14 +218,63 @@ namespace
             colour = sum / max (weight, 1.0e-6);
             return a;
         }
+
+        // The fields of all the sources at a point of the scene, added as
+        // waves: band by band, each source's faded by its distance, so
+        // they strengthen each other or cancel. The colour is that of the
+        // sums. Returns the amplitude of it all.
+        float together (vec3 p, out vec4 colour)
+        {
+            vec3 qs[8];
+            float dims[8];
+            float pitches[8];
+            for (int k = 0; k < 8; ++k)
+            {
+                if (k >= count)
+                    break;
+
+                qs[k] = sourceAxes[k] * (p - sourceAt[k]);
+                dims[k] = fadeAt (k, length (qs[k]));
+                pitches[k] = eq > 0.5 ? pitchAt (qs[k]) : 0.0;
+            }
+
+            float a = 0.0, weight = 0.0;
+            vec4 sum = vec4 (0.0);
+            for (int b = 0; b < 8; ++b)
+            {
+                float x = 0.0, full = 0.0;
+                for (int k = 0; k < 8; ++k)
+                {
+                    if (k >= count)
+                        break;
+
+                    float lets = bandLevel[k * 8 + b] * dims[k];
+                    if (eq > 0.5)
+                        lets *= clamp (1.0 + 0.5 * eqWidth - abs (float (b) + 0.5 - pitches[k]), 0.0, 1.0);
+
+                    if (lets > 0.004)
+                    {
+                        x += lets * shape (qs[k], float (k * 8 + b));
+                        full += lets;
+                    }
+                }
+
+                if (full > 0.0)
+                {
+                    float w = abs (x) + 0.02 * full;
+                    a += x;
+                    sum += w * tint (vec4 (bandColour[b], colourAlpha), x / full);
+                    weight += w;
+                }
+            }
+            colour = sum / max (weight, 1.0e-6);
+            return a;
+        }
     )";
 
     // The field on a plane. The amplitude is how bright it is, it fades
     // with distance from the source, and the sources are added as light.
     const juce::String fieldFragmentShader = juce::String (fieldCommon) + R"(
-        uniform int count;
-        uniform vec3 sourceAt[8];
-        uniform mat3 sourceAxes[8];   // the scene to the source's own axes
         uniform float alphaScale;
         varying vec3 where;
 
@@ -227,7 +284,13 @@ namespace
             // strong each source is here.
             vec4 light = vec4 (0.0);
             float weight = 0.0;
-            for (int k = 0; k < 8; ++k)
+            if (interfere > 0.5)
+            {
+                vec4 colour;
+                weight = seen (together (where, colour));
+                light = weight * colour;
+            }
+            else for (int k = 0; k < 8; ++k)
             {
                 if (k >= count)
                     break;
@@ -260,9 +323,6 @@ namespace
     )";
 
     const juce::String volumeFragmentShader = juce::String (fieldCommon) + R"(
-        uniform int count;
-        uniform vec3 sourceAt[8];
-        uniform mat3 sourceAxes[8];
         uniform mat3 cameraBack;  // the viewer's space to the scene, for directions
         uniform vec3 eyeAt;       // where the eye is in the scene
         uniform float eye;
@@ -325,7 +385,17 @@ namespace
                     vec3 glow = vec3 (0.0);
                     float thick = 0.0, strong = 0.0;
 
-                    for (int k = 0; k < 8; ++k)
+                    // The sources' waves added and then shown as one, or
+                    // each shown by itself and their light added.
+                    if (interfere > 0.5)
+                    {
+                        vec4 colour;
+                        float m = seen (together (p, colour)) * (rings > 0.5 ? 0.3 : 2.0);
+                        glow = m * colour.rgb;
+                        thick = m * colour.a;
+                        strong = m;
+                    }
+                    else for (int k = 0; k < 8; ++k)
                     {
                         if (k >= count)
                             break;
@@ -787,7 +857,9 @@ ScopeComponent::Look ScopeComponent::readLook (const ScopeParamSet* params)
              0.5f * std::pow (80.0f, get (pFieldDensity) * 0.01f),
              get (pFieldFocus),
              get (pFieldAperture) * 0.01f,
-             get (pAlpha) * 0.01f };
+             get (pAlpha) * 0.01f,
+             get (pFieldInterfere) > 0.5f,
+             get (pFieldSaturation) * 0.01f };
 }
 
 scope::Camera ScopeComponent::cameraOf (const Look& look)
@@ -1151,6 +1223,8 @@ void ScopeComponent::LayerRenderer::useSources (juce::OpenGLShaderProgram& shade
     glUniformMatrix3fv (glGetUniformLocation (program, "sourceAxes"), scope::maxFieldSources, GL_FALSE, axes);
     shader.setUniform ("count", (GLint) count);
     shader.setUniform ("colourAlpha", look.alpha);
+    shader.setUniform ("interfere", look.fieldInterfere ? 1.0f : 0.0f);
+    shader.setUniform ("pure", juce::jlimit (0.0f, 1.0f, look.fieldPure));
     shader.setUniform ("reach", juce::jmax (1.0e-3f, frame->reach));
     shader.setUniform ("rings", frame->rings ? 1.0f : 0.0f);
     shader.setUniform ("eq", frame->eq ? 1.0f : 0.0f);

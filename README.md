@@ -102,6 +102,22 @@ Each channel is drawn as a 2D trajectory in its own square:
   them, added as light: an XY and a YZ plane show the same spheres cut two
   ways.
 
+  With **Interfere** on, the instances' waves are added first and the
+  sum is coloured, so they strengthen each other or cancel. **Polarity**
+  is what an instance's wave is multiplied by on the way in: 1 as it is,
+  -1 turned over, 0 none of it. Put the left and the right channel on an
+  instance each, at the same position and plane: with both at 1 you see
+  what is left of them in mono, and what is out of phase goes dark; with
+  one at -1 you see only where the two differ, so a mix that is fine in
+  mono goes almost black. Apart from each other, the two make fringes
+  between them, like two speakers in a room. With Interfere off, a
+  negative Polarity only swaps the instance's colours for their opposites.
+
+  **Saturation** is how pure the colours are. At 0 a colour goes over to
+  its opposite through grey as the wave swings, which makes much of the
+  field pale; at 100 it is the one or the other, and only dark in the
+  gaps between.
+
 The **Mono** layout draws one picture, of the two channels' average. On a
 mono track the plugin always draws that way, whatever the layout says: there
 is no second channel to put beside it.
